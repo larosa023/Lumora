@@ -1464,6 +1464,76 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
   align-self: flex-start;
 }
 
+/* --- Hardware -------------------------------------------------------------- */
+
+.hw-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.hw-card[hidden] {
+  display: none;
+}
+
+.hw-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hw-text strong {
+  font-weight: 560;
+}
+
+.hw-text small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hw-card.on .hw-text small {
+  color: var(--ok);
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  width: max-content;
+}
+
+.advanced summary:hover {
+  color: var(--text);
+}
+
+.advanced[open] summary {
+  margin-bottom: 12px;
+}
+
+.advanced .toggle-row {
+  margin-bottom: 12px;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 /* --- Updates ----------------------------------------------------------------- */
 
 .update-pill {

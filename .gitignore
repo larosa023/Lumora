@@ -4,3 +4,4 @@
 *.key
 *.key.pub
 .DS_Store
+/src-tauri/engine

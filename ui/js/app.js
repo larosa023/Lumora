@@ -163,20 +163,121 @@ function select(id) {
   renderInspector();
 }
 
+function engineSummary() {
+  const n = devices().filter((d) => !d.virtual_device).length;
+  if (!n) return 'The hardware engine is running and looking for devices.';
+  return `The hardware engine is running and controls ${n === 1 ? 'one device' : n + ' devices'}.`;
+}
+
+const engine = () => state.app.engine || { mode: 'external', bundled: false, full_access: 'unsupported' };
+const builtin = () => engine().mode !== 'external';
+
 function renderConnection() {
   const c = snap().connection;
+  const e = engine();
   const box = $('#connection');
   box.dataset.status = c.status;
   const demo = devices().some((d) => d.virtual_device);
-  const titles = { connected: 'OpenRGB connected', connecting: 'Looking for OpenRGB…', offline: demo ? 'Showing demo devices' : 'OpenRGB offline' };
-  $('#connTitle').textContent = titles[c.status];
-  $('#connDetail').textContent = c.status === 'connected' ? c.message : c.status === 'offline' ? 'Start OpenRGB to connect' : c.server;
-  $('#connAction').hidden = c.status === 'connected';
+  let title, detail;
+  if (builtin()) {
+    title = { connected: 'Hardware engine running', connecting: 'Starting hardware engine…', offline: 'Starting hardware engine…' }[c.status];
+    const n = devices().filter((d) => !d.virtual_device).length;
+    detail = c.status === 'connected'
+      ? (n ? `${n} device${n === 1 ? '' : 's'}` : 'Looking for devices…')
+      : 'This takes a few seconds';
+    if (e.problem) {
+      title = 'Hardware engine stopped';
+      detail = e.problem;
+    }
+  } else {
+    title = { connected: 'OpenRGB connected', connecting: 'Looking for OpenRGB…', offline: demo ? 'Showing demo devices' : 'OpenRGB offline' }[c.status];
+    detail = c.status === 'connected' ? c.message : c.status === 'offline' ? 'Start OpenRGB to connect' : c.server;
+  }
+  $('#connTitle').textContent = title;
+  $('#connDetail').textContent = detail;
+  $('#connAction').hidden = c.status === 'connected' || builtin();
   const s = $('#settingsStatus');
-  if (s) s.textContent = c.status === 'connected' ? `Connected to ${c.server}. ${c.message}.` : c.message || 'Connecting…';
+  if (s) {
+    s.textContent = c.status === 'connected'
+      ? (builtin() ? engineSummary() : `Connected to ${c.server}. ${c.message}.`)
+      : builtin() ? 'The hardware engine is starting.' : c.message || 'Connecting…';
+  }
 }
 
 $('#connAction').addEventListener('click', () => openSettings('#host'));
+
+// --- RAM & motherboard (full hardware access) -------------------------------------
+
+function renderHardware() {
+  const e = engine();
+  const supported = e.full_access !== 'unsupported';
+  const card = $('#fullAccessCard');
+  card.hidden = !supported;
+  card.classList.toggle('on', e.full_access === 'on');
+  const btn = $('#fullAccessBtn');
+  const text = {
+    off: 'Off. Needs a one-time Windows permission.',
+    on: 'On. Lumora can reach your RAM and motherboard.',
+    needs_update: 'On. A newer hardware engine is ready to install.',
+  }[e.full_access] || '';
+  $('#fullAccessText').textContent = text;
+  btn.textContent = { off: 'Turn on', on: 'Turn off', needs_update: 'Update' }[e.full_access] || 'Turn on';
+  btn.classList.toggle('primary', e.full_access !== 'on');
+  $('#builtinRow').hidden = !e.bundled;
+  $('#externalNote').hidden = builtin();
+  $('#getOpenRgb').hidden = builtin();
+}
+
+function openFullAccess() {
+  $('#fullAccessStatus').hidden = true;
+  $('#fullAccessGo').disabled = false;
+  $('#fullAccessCancel').disabled = false;
+  if ($('#settings').open) $('#settings').close();
+  $('#fullAccessDialog').showModal();
+}
+
+async function runFullAccess(enable) {
+  try {
+    state.app.engine = await api.invoke(enable ? 'enable_full_access' : 'disable_full_access');
+    renderHardware();
+    renderStageHead();
+    return null;
+  } catch (err) {
+    return String(err);
+  }
+}
+
+$('#fullAccessBtn').addEventListener('click', async () => {
+  const e = engine();
+  if (e.full_access === 'off') return openFullAccess();
+  const btn = $('#fullAccessBtn');
+  btn.disabled = true;
+  $('#fullAccessText').textContent = 'Waiting for Windows permission…';
+  const err = await runFullAccess(e.full_access === 'needs_update');
+  btn.disabled = false;
+  renderHardware();
+  if (err) $('#fullAccessText').textContent = err;
+  else toast(e.full_access === 'needs_update' ? 'Hardware engine updated' : 'RAM & motherboard lighting is off');
+});
+
+$('#fullAccessCancel').addEventListener('click', () => $('#fullAccessDialog').close());
+$('#fullAccessGo').addEventListener('click', async () => {
+  $('#fullAccessGo').disabled = true;
+  $('#fullAccessCancel').disabled = true;
+  const status = $('#fullAccessStatus');
+  status.hidden = false;
+  status.textContent = 'Waiting for Windows permission…';
+  const err = await runFullAccess(true);
+  $('#fullAccessCancel').disabled = false;
+  if (err) {
+    status.textContent = err;
+    $('#fullAccessGo').disabled = false;
+    $('#fullAccessGo').textContent = 'Try again';
+    return;
+  }
+  $('#fullAccessDialog').close();
+  toast('RAM & motherboard lighting is on. Devices appear in a few seconds.');
+});
 
 // --- Stage ------------------------------------------------------------------
 
@@ -203,13 +304,17 @@ function renderStageHead() {
     $('#stageTitle').textContent = 'All devices';
     const demo = list.some((x) => x.virtual_device);
     $('#stageSub').textContent = demo
-      ? 'These are demo devices. Connect OpenRGB to light up your own.'
+      ? (builtin() ? 'These are demo devices. Yours replace them as soon as the hardware engine finds them.' : 'These are demo devices. Connect OpenRGB to light up your own.')
       : !list.length
         ? ''
         : custom
           ? `Effects here apply to every device except the ${custom === 1 ? 'one' : custom} with ${custom === 1 ? 'its' : 'their'} own effect.`
           : `One effect across all ${list.length} devices, in sync.`;
-    actions.innerHTML = custom ? `<button class="chip accent" id="syncAll">${icon('reset')}Sync all devices</button>` : '';
+    const boardless = !list.some((x) => !x.virtual_device && (x.kind === 'ram' || x.kind === 'motherboard'));
+    const offerFull = engine().full_access === 'off' && boardless;
+    actions.innerHTML = (offerFull ? `<button class="chip" id="addBoard">${icon('ram')}Add RAM &amp; motherboard</button>` : '')
+      + (custom ? `<button class="chip accent" id="syncAll">${icon('reset')}Sync all devices</button>` : '');
+    $('#addBoard')?.addEventListener('click', openFullAccess);
     $('#syncAll')?.addEventListener('click', () => {
       api.invoke('sync_all', { config: snap().global });
       snap().overrides = {};
@@ -616,6 +721,8 @@ function renderSettings() {
   $('#closeTray').checked = s.close_to_tray;
   $('#autostart').checked = state.app.launch_at_login;
   $('#autoUpdate').checked = s.check_for_updates;
+  $('#builtinEngine').checked = s.builtin_engine;
+  renderHardware();
   renderUpdateStatus();
   $('#about').textContent = `Lumora ${state.app.version}${api.inApp ? '' : ' (browser preview with demo devices)'}`;
   renderConnection();
@@ -670,6 +777,7 @@ $('#port').addEventListener('change', (ev) => {
   else ev.target.value = state.app.settings.port;
 });
 $('#reconnectBtn').addEventListener('click', () => api.invoke('reconnect'));
+$('#builtinEngine').addEventListener('change', (ev) => saveSettings({ builtin_engine: ev.target.checked }));
 $('#startMin').addEventListener('change', (ev) => saveSettings({ start_minimized: ev.target.checked }));
 $('#closeTray').addEventListener('change', (ev) => saveSettings({ close_to_tray: ev.target.checked }));
 $('#autostart').addEventListener('change', async (ev) => {
@@ -867,6 +975,12 @@ async function init() {
 
   await api.listen('lumora://changed', (e) => onSnapshot(e.payload));
   await api.listen('lumora://frames', (e) => onFrames(e.payload));
+  await api.listen('lumora://engine', (e) => {
+    state.app.engine = e.payload;
+    renderConnection();
+    renderHardware();
+    renderStageHead();
+  });
   await api.listen('lumora://update-progress', (e) => onUpdateProgress(e.payload));
   await api.listen('lumora://update-available', (e) => {
     const fresh = !update;

@@ -51,6 +51,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Bundle the hardware engine (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/fetch-engine.ps1
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,3 +71,14 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Attach OpenRGB source (GPL)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $engine = (Get-Content src-tauri/engine/VERSION).Split('-')[0]
+          Invoke-WebRequest -Uri "https://codeberg.org/OpenRGB/OpenRGB/archive/release_$engine.tar.gz" -OutFile "OpenRGB-$engine-source.tar.gz"
+          gh release upload "v$version" "OpenRGB-$engine-source.tar.gz" --clobber

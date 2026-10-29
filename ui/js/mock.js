@@ -71,7 +71,7 @@ const state = {
   effects: EFFECTS,
   settings: {
     host: '127.0.0.1', port: 6742, fps: 30, theme: 'dark', accent: '#7c5cff', accent_follows_lighting: false,
-    demo_devices: 'auto', start_minimized: false, close_to_tray: true, check_for_updates: true,
+    demo_devices: 'auto', start_minimized: false, close_to_tray: true, check_for_updates: true, builtin_engine: true,
   },
   profiles: [
     preset('Neon Drift', 'color_wave', ['#7c5cff', '#00d4ff', '#ff3da8'], 40, 50, 'right'),
@@ -82,6 +82,7 @@ const state = {
   ],
   active_profile: null,
   launch_at_login: false,
+  engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
   version: '0.1.0-preview',
 };
 
@@ -160,6 +161,8 @@ const commands = {
     setTimeout(() => { state.snapshot.connection.status = 'offline'; changed(); }, 900);
   },
   set_launch_at_login: ({ on }) => (state.launch_at_login = on),
+  enable_full_access: () => new Promise((resolve) => setTimeout(() => resolve(Object.assign(state.engine, { mode: 'full', full_access: 'on' })), 1200)),
+  disable_full_access: () => new Promise((resolve) => setTimeout(() => resolve(Object.assign(state.engine, { mode: 'standard', full_access: 'off' })), 800)),
   open_external: ({ url }) => { window.open(url, '_blank'); },
   // Add ?update to the preview URL to try the update flow.
   check_update: () => new Promise((resolve) => setTimeout(() => resolve(location.search.includes('update') ? {

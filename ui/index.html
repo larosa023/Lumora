@@ -136,15 +136,26 @@
       </section>
 
       <section class="sheet-section">
-        <h3>OpenRGB connection</h3>
-        <p class="sheet-note">Lumora reaches your hardware through OpenRGB, which supports hundreds of RAM, motherboard, GPU, cooler, fan, keyboard and mouse controllers. Open OpenRGB, go to the SDK Server tab and click Start Server. Lumora connects on its own.</p>
-        <div class="field-row">
-          <label class="field"><span>Host</span><input id="host" spellcheck="false" autocomplete="off"></label>
-          <label class="field field-port"><span>Port</span><input id="port" inputmode="numeric" autocomplete="off"></label>
-          <button type="button" class="btn" id="reconnectBtn">Reconnect</button>
+        <h3>Hardware</h3>
+        <div class="hw-card" id="fullAccessCard" hidden>
+          <span class="hw-text">
+            <strong>RAM &amp; motherboard lighting</strong>
+            <small id="fullAccessText"></small>
+          </span>
+          <button type="button" class="btn primary" id="fullAccessBtn">Turn on</button>
         </div>
         <p class="sheet-status" id="settingsStatus"></p>
-        <button type="button" class="text-btn" id="getOpenRgb">Download OpenRGB</button>
+        <p class="sheet-note" id="externalNote" hidden>This version of Lumora reaches your hardware through OpenRGB. Open OpenRGB, go to the SDK Server tab and click Start Server, and Lumora connects on its own.</p>
+        <button type="button" class="text-btn" id="getOpenRgb" hidden>Download OpenRGB</button>
+        <details class="advanced">
+          <summary>Advanced connection</summary>
+          <label class="toggle-row" id="builtinRow"><span><strong>Use the built-in hardware engine</strong><small>Turn this off only if you run OpenRGB yourself or control another PC</small></span><input type="checkbox" class="switch" id="builtinEngine"></label>
+          <div class="field-row">
+            <label class="field"><span>Host</span><input id="host" spellcheck="false" autocomplete="off"></label>
+            <label class="field field-port"><span>Port</span><input id="port" inputmode="numeric" autocomplete="off"></label>
+            <button type="button" class="btn" id="reconnectBtn">Reconnect</button>
+          </div>
+        </details>
       </section>
 
       <section class="sheet-section">
@@ -200,6 +211,27 @@
       <footer class="update-actions">
         <button type="button" class="btn" id="updateLater">Later</button>
         <button type="button" class="btn primary" id="updateInstall">Install and restart</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog class="sheet update-sheet" id="fullAccessDialog" aria-labelledby="fullAccessTitle">
+    <div class="sheet-inner">
+      <header class="sheet-head">
+        <h2 id="fullAccessTitle">Turn on RAM &amp; motherboard lighting</h2>
+      </header>
+      <section class="sheet-section">
+        <p class="sheet-note">RAM and motherboard lighting sit on a system bus that Windows only opens to programs with administrator rights. Lumora sets this up once:</p>
+        <ul class="steps">
+          <li>Installs PawnIO, a small signed driver made for exactly this</li>
+          <li>Runs its hardware engine with full access each time you sign in</li>
+        </ul>
+        <p class="sheet-note">Windows asks for your permission one time. You won't see the prompt again.</p>
+        <p class="sheet-status" id="fullAccessStatus" hidden></p>
+      </section>
+      <footer class="update-actions">
+        <button type="button" class="btn" id="fullAccessCancel">Not now</button>
+        <button type="button" class="btn primary" id="fullAccessGo">Continue</button>
       </footer>
     </div>
   </dialog>

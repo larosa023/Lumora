@@ -10,7 +10,8 @@ Lumora replaces the pile of vendor apps (iCUE, Armoury Crate, Mystic Light, Syna
 
 ## Features
 
-- **Every device in one place.** Lumora drives hardware through [OpenRGB](https://openrgb.org), which already supports hundreds of RAM, motherboard, GPU, cooler, fan, LED strip, keyboard, mouse and headset controllers.
+- **Nothing else to install.** On Windows, Lumora carries its own hardware engine (built on [OpenRGB](https://openrgb.org), bundled and run invisibly), which supports hundreds of RAM, motherboard, GPU, cooler, fan, LED strip, keyboard, mouse and headset controllers.
+- **RAM & motherboard in one click.** Windows only opens those to admin programs, so Lumora asks for permission once, installs the small signed PawnIO driver, and never asks again.
 - **12 effects:** Static, Gradient, Breathing, Spectrum, Aurora, Rainbow, Color Wave, Ripple, Comet, Marquee, Starfield and Fire, each with speed, size and direction controls.
 - **Colors your way:** a full color picker, hex entry, curated swatches, recent colors, screen eyedropper (Windows), up to six colors per effect and one-click palettes.
 - **Sync or customize:** one effect across your whole rig, or an override for any device.
@@ -24,15 +25,17 @@ Lumora replaces the pile of vendor apps (iCUE, Armoury Crate, Mystic Light, Syna
 
 ## Getting started
 
-1. Install [OpenRGB](https://openrgb.org) and open it once so it detects your devices.
-2. In OpenRGB, open the **SDK Server** tab and click **Start Server**. (Turn on *Start server on launch* in OpenRGB's settings so it's always ready.)
-3. Install Lumora from the [latest release](https://github.com/larosa023/lumora/releases/latest) and open it. It connects on its own.
+1. Download the Windows installer (`Lumora_x.y.z_x64-setup.exe`) from the [latest release](https://github.com/larosa023/lumora/releases/latest) and run it. Windows may say it protected your PC because the app is new: click **More info**, then **Run anyway**.
+2. Open Lumora. It finds your keyboards, mice, headsets, coolers, fan hubs and most GPUs on its own in a few seconds.
+3. For RAM and motherboard lighting, click **Add RAM & motherboard** (or Settings → Hardware) and approve the one Windows prompt.
 
-> Close vendor RGB apps (iCUE, Armoury Crate, etc.) while using Lumora so they don't fight over the same lights.
+> Close other RGB apps (iCUE, Armoury Crate, Mystic Light, G Hub…) if you have them, so they don't fight over the same lights.
+
+On macOS and Linux, Lumora connects to [OpenRGB](https://openrgb.org) running on your machine: start OpenRGB, open its **SDK Server** tab and click **Start Server**.
 
 ## Building from source
 
-You need [Rust](https://rustup.rs), [Node.js](https://nodejs.org) 20+, and on Windows the WebView2 runtime (already on Windows 10/11).
+You need [Rust](https://rustup.rs), [Node.js](https://nodejs.org) 20+, and on Windows the WebView2 runtime (already on Windows 10/11). On Windows, fetch the bundled hardware engine once with `powershell -ExecutionPolicy Bypass -File scripts/fetch-engine.ps1`.
 
 ```sh
 npm install
@@ -64,8 +67,10 @@ src-tauri            Desktop shell: window, tray, updater, settings on disk
 ui                   Interface: plain HTML, CSS and JavaScript (no framework, no bundler)
 ```
 
+On Windows the shell starts the bundled OpenRGB as a hidden local server (127.0.0.1 only) and supervises it. With RAM & motherboard lighting on, a copy lives in `C:\Program Files\Lumora Engine` (writable only by admins) and a scheduled task, `Lumora\Engine`, starts it with full access at sign-in. Turning the option off in Settings removes both. See [THIRD_PARTY.md](THIRD_PARTY.md) for licenses.
+
 The engine renders every effect from one shared clock, so devices on different buses stay in phase. It sends only frames that changed, idles when nothing animates, and keeps trying to reconnect if OpenRGB restarts.
 
 ## License
 
-MIT. The bundled Sora font is under the SIL Open Font License (`ui/fonts/OFL.txt`).
+MIT. Bundled third-party software keeps its own license: see [THIRD_PARTY.md](THIRD_PARTY.md).

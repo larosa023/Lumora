@@ -38,6 +38,9 @@ pub struct Settings {
     pub close_to_tray: bool,
     /// Look for new Lumora versions in the background.
     pub check_for_updates: bool,
+    /// Run the hardware engine that ships inside Lumora (Windows). Off means
+    /// "connect to an OpenRGB I run myself".
+    pub builtin_engine: bool,
 }
 
 impl Default for Settings {
@@ -53,6 +56,7 @@ impl Default for Settings {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            builtin_engine: true,
         }
     }
 }

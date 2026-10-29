@@ -23,3 +23,36 @@ jobs:
         run: cargo build -p lumora
       - name: UI scripts parse
         run: for f in ui/js/*.js scripts/*.mjs; do node --check "$f"; done
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: Bundle the hardware engine
+        shell: pwsh
+        run: ./scripts/fetch-engine.ps1
+      - name: App builds on Windows
+        run: cargo build -p lumora
+      - name: Windows unit tests
+        run: cargo test -p lumora
+
+  real-openrgb:
+    # Talks to a real OpenRGB server (no hardware, so zero devices) to catch
+    # protocol changes in new OpenRGB releases.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - name: Start OpenRGB headless
+        run: |
+          curl -fsSL -o OpenRGB.AppImage https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_1.1/OpenRGB_1.1_x86_64_8e16de2.AppImage
+          chmod +x OpenRGB.AppImage && ./OpenRGB.AppImage --appimage-extract > /dev/null
+          QT_QPA_PLATFORM=offscreen ./squashfs-root/AppRun --server --server-host 127.0.0.1 --server-port 6742 --config "$RUNNER_TEMP/orgb" > openrgb.log 2>&1 &
+      - name: Lumora's client connects
+        run: cargo run -p lumora-core --example probe
+      - name: OpenRGB log
+        if: always()
+        run: cat openrgb.log || true

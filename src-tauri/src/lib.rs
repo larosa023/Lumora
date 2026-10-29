@@ -1,12 +1,15 @@
 //! The desktop shell: window, tray, persistence and the commands the UI calls.
 //! All the lighting work happens in `lumora-core`.
 
+mod engine_host;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
+use engine_host::{EngineHost, EngineStatus};
 use lumora_core::effects::catalog;
 use lumora_core::engine::EngineEvent;
 use lumora_core::store::Store;
@@ -57,12 +60,13 @@ struct AppState {
     active_profile: Option<String>,
     launch_at_login: bool,
     version: &'static str,
+    engine: EngineStatus,
 }
 
 type CmdResult<T> = Result<T, String>;
 
 #[tauri::command]
-fn get_state(app: State<App>, handle: AppHandle) -> AppState {
+fn get_state(app: State<App>, host: State<Arc<EngineHost>>, handle: AppHandle) -> AppState {
     AppState {
         snapshot: app.engine.snapshot(),
         effects: catalog(),
@@ -71,7 +75,28 @@ fn get_state(app: State<App>, handle: AppHandle) -> AppState {
         active_profile: app.active_profile.lock().unwrap().clone(),
         launch_at_login: handle.autolaunch().is_enabled().unwrap_or(false),
         version: env!("CARGO_PKG_VERSION"),
+        engine: host.status(),
     }
+}
+
+pub fn run_elevated_helper() -> Option<i32> {
+    engine_host::run_elevated_from_args()
+}
+
+#[tauri::command]
+async fn enable_full_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<EngineStatus> {
+    let h = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || h.enable_full_access().map(|_| h.status()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn disable_full_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<EngineStatus> {
+    let h = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || h.disable_full_access().map(|_| h.status()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -170,9 +195,13 @@ fn delete_profile(app: State<App>, name: String) -> CmdResult<Vec<Profile>> {
 }
 
 #[tauri::command]
-fn update_settings(app: State<App>, settings: Settings) -> CmdResult<Settings> {
+fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Settings) -> CmdResult<Settings> {
     let settings = settings.sanitized();
     app.store.save_settings(&settings).map_err(|e| e.to_string())?;
+    let before = app.settings.lock().unwrap().clone();
+    if before.builtin_engine != settings.builtin_engine || before.host != settings.host {
+        host.apply(settings.builtin_engine, &settings.host);
+    }
     app.engine.apply_settings(settings.clone());
     *app.settings.lock().unwrap() = settings.clone();
     Ok(settings)
@@ -268,7 +297,7 @@ async fn install_update(handle: AppHandle) -> CmdResult<()> {
     let progress = handle.clone();
     let mut downloaded = 0u64;
     let result = update
-        .download_and_install(
+        .download(
             |chunk, total| {
                 downloaded += chunk as u64;
                 let _ = progress.emit("lumora://update-progress", UpdateProgress { downloaded, total });
@@ -276,6 +305,16 @@ async fn install_update(handle: AppHandle) -> CmdResult<()> {
             || {},
         )
         .await;
+    // The installer replaces the bundled engine, so it mustn't be running.
+    let result = match result {
+        Ok(bytes) => {
+            if let Some(host) = handle.try_state::<Arc<EngineHost>>() {
+                host.stop_for_update();
+            }
+            update.install(bytes)
+        }
+        Err(e) => Err(e),
+    };
     if let Err(e) = result {
         updates.installing.store(false, Ordering::SeqCst);
         return Err(format!("The update couldn't be installed: {e}"));
@@ -373,6 +412,13 @@ pub fn run() {
                 }
             });
 
+            let engine_events = handle.clone();
+            let host = EngineHost::new(app.path().resource_dir().ok(), app.path().app_config_dir()?, move |status| {
+                let _ = engine_events.emit("lumora://engine", status);
+            });
+            host.apply(settings.builtin_engine, &settings.host);
+            app.manage(host);
+
             let start_hidden = settings.start_minimized || std::env::args().any(|a| a == "--minimized");
             let engine = Engine::new(settings.clone(), session, listener);
             app.manage(App {
@@ -435,6 +481,8 @@ pub fn run() {
             open_external,
             check_update,
             install_update,
+            enable_full_access,
+            disable_full_access,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Lumora");
@@ -443,6 +491,9 @@ pub fn run() {
         if let RunEvent::Exit = event {
             if let Some(app) = handle.try_state::<App>() {
                 app.save_session();
+            }
+            if let Some(host) = handle.try_state::<Arc<EngineHost>>() {
+                host.stop_child();
             }
         }
     });
