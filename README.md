@@ -46,11 +46,13 @@ cargo test -p lumora-core
 
 Releases are built and published by GitHub Actions, and installed copies of Lumora update themselves from them.
 
+The quickest way: on GitHub, open **Actions → Release → Run workflow**. It publishes whatever version is in `src-tauri/tauri.conf.json`, so bump that first for a new release. Or from a terminal:
+
 ```sh
 npm run release -- 0.2.0
 ```
 
-That bumps the version, tags `v0.2.0` and pushes. About 15 minutes later the installers are on the Releases page and everyone's Lumora offers the update.
+That bumps the version everywhere, tags `v0.2.0` and pushes. About 15 minutes later the installers are on the Releases page and everyone's Lumora offers the update.
 
 Updates are signed. The workflow needs the signing key in the repo's secrets as `TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the key has one). The matching public key lives in `src-tauri/tauri.conf.json`. Keep a backup of the private key: without it you can't ship updates to existing installs. To start over with a new key, run `npx tauri signer generate -w lumora.key`, put the new public key in `tauri.conf.json`, and update the secret.
 

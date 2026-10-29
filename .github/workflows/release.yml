@@ -2,7 +2,10 @@
 # The release includes a signed latest.json, which is what the in-app updater
 # reads, so every installed copy offers the new version automatically.
 #
-# Start a release with:  npm run release -- 0.2.0   (bumps, commits, tags, pushes)
+# Start a release either way:
+#   - GitHub: Actions → Release → Run workflow. It publishes the version in
+#     src-tauri/tauri.conf.json and creates the tag for you.
+#   - Terminal: npm run release -- 0.2.0   (bumps, commits, tags, pushes)
 name: Release
 
 on:
@@ -55,8 +58,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: src-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Lumora ${{ github.ref_name }}'
+          # __VERSION__ is filled in from tauri.conf.json.
+          tagName: v__VERSION__
+          releaseName: 'Lumora v__VERSION__'
           releaseBody: 'See the changes below. Lumora installs this update for you from Settings, or from the Update button when it appears.'
           releaseDraft: false
           prerelease: false
