@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::color::Rgb;
-use crate::openrgb::{packet, Controller, Mode, Zone, MAGIC, MODE_FLAG_HAS_PER_LED_COLOR, NO_LED, ZONE_LINEAR, ZONE_MATRIX, ZONE_SINGLE};
+use crate::openrgb::{packet, Controller, Mode, Segment, Zone, MAGIC, MODE_FLAG_HAS_PER_LED_COLOR, NO_LED, ZONE_LINEAR, ZONE_MATRIX, ZONE_SINGLE};
 
 /// What the mock server has received, for assertions.
 #[derive(Default, Debug)]
@@ -209,6 +209,15 @@ pub fn encode_controller(c: &Controller, protocol: u32) -> Vec<u8> {
             }
             None => b.extend_from_slice(&0u16.to_le_bytes()),
         }
+        if protocol >= 4 {
+            b.extend_from_slice(&(z.segments.len() as u16).to_le_bytes());
+            for seg in &z.segments {
+                s(&mut b, &seg.name);
+                u(&mut b, seg.kind as u32);
+                u(&mut b, seg.start);
+                u(&mut b, seg.leds_count);
+            }
+        }
     }
     b.extend_from_slice(&(c.leds.len() as u16).to_le_bytes());
     for (i, l) in c.leds.iter().enumerate() {
@@ -246,12 +255,12 @@ fn controller(kind: i32, name: &str, vendor: &str, location: &str, zones: Vec<Zo
 }
 
 fn zone(name: &str, kind: i32, n: u32) -> Zone {
-    Zone { name: name.into(), kind, leds_min: n, leds_max: n, leds_count: n, matrix: None }
+    Zone { name: name.into(), kind, leds_min: n, leds_max: n, leds_count: n, matrix: None, segments: Vec::new() }
 }
 
 /// An addressable header: empty until told how many LEDs are on it.
 fn header(name: &str) -> Zone {
-    Zone { name: name.into(), kind: ZONE_LINEAR, leds_min: 0, leds_max: 120, leds_count: 0, matrix: None }
+    Zone { name: name.into(), kind: ZONE_LINEAR, leds_min: 0, leds_max: 120, leds_count: 0, matrix: None, segments: Vec::new() }
 }
 
 /// A believable desktop: two RAM sticks, a GPU, an AIO with fans, a keyboard and a mouse.
@@ -267,14 +276,21 @@ pub fn sample_rig() -> Vec<Controller> {
             "Kraken Elite",
             "NZXT",
             "HID: /dev/hidraw3",
-            vec![zone("Pump Ring", ZONE_LINEAR, 24), zone("Fan 1", ZONE_LINEAR, 8), zone("Fan 2", ZONE_LINEAR, 8)],
+            vec![
+                Zone {
+                    segments: vec![Segment { name: "Ring".into(), kind: ZONE_LINEAR, start: 0, leds_count: 24 }],
+                    ..zone("Pump Ring", ZONE_LINEAR, 24)
+                },
+                zone("Fan 1", ZONE_LINEAR, 8),
+                zone("Fan 2", ZONE_LINEAR, 8),
+            ],
         ),
         controller(
             5,
             "Mini Board",
             "Lumora Labs",
             "HID: /dev/hidraw5",
-            vec![Zone { name: "Keyboard".into(), kind: ZONE_MATRIX, leds_min: 9, leds_max: 9, leds_count: 9, matrix: Some((h, w, map)) }],
+            vec![Zone { name: "Keyboard".into(), kind: ZONE_MATRIX, leds_min: 9, leds_max: 9, leds_count: 9, matrix: Some((h, w, map)), segments: Vec::new() }],
         ),
         controller(6, "Viper V3", "Razer", "HID: /dev/hidraw7", vec![zone("Logo", ZONE_SINGLE, 1), zone("Underglow", ZONE_LINEAR, 6)]),
         controller(

@@ -31,6 +31,10 @@ fn client_reads_controllers_at_every_protocol() {
             if proto == 0 {
                 x.vendor.clear();
             }
+            if proto < 4 {
+                // Segments arrived with protocol 4.
+                x.zones.iter_mut().for_each(|z| z.segments.clear());
+            }
             x
         }).collect::<Vec<_>>());
         assert!(controllers.iter().all(|c| c.supports_direct()));

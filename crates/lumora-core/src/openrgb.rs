@@ -21,7 +21,8 @@ pub const DEFAULT_PORT: u16 = 6742;
 pub const MAGIC: &[u8; 4] = b"ORGB";
 /// Highest protocol version Lumora understands. The server talks to each
 /// client at `min(client, server)`, so asking for 4 keeps the format stable
-/// even against newer servers (v5 adds zone segments).
+/// even against newer servers (v5 adds zone and device flags, v6 switches to
+/// device ids).
 pub const CLIENT_PROTOCOL: u32 = 4;
 const CLIENT_NAME: &str = "Lumora";
 
@@ -92,6 +93,16 @@ pub struct Zone {
     pub leds_count: u32,
     /// `(height, width, map)` – map holds zone-relative LED indices or [`NO_LED`].
     pub matrix: Option<(u32, u32, Vec<u32>)>,
+    /// Named sub-ranges of the zone (protocol 4+), e.g. fans on one header.
+    pub segments: Vec<Segment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    pub name: String,
+    pub kind: i32,
+    pub start: u32,
+    pub leds_count: u32,
 }
 
 struct Packet {
@@ -390,7 +401,19 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
             r.take(matrix_len)?;
             None
         };
-        zones.push(Zone { name, kind, leds_min, leds_max, leds_count, matrix });
+        // Protocol 4 added segments to every zone, even when there are none.
+        let mut segments = Vec::new();
+        if protocol >= 4 {
+            let n = r.u16()?;
+            for _ in 0..n {
+                let name = r.string()?;
+                let kind = r.i32()?;
+                let start = r.u32()?;
+                let leds_count = r.u32()?;
+                segments.push(Segment { name, kind, start, leds_count });
+            }
+        }
+        zones.push(Zone { name, kind, leds_min, leds_max, leds_count, matrix, segments });
     }
 
     let num_leds = r.u16()?;
@@ -404,6 +427,14 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
     let mut colors = Vec::with_capacity(num_colors as usize);
     for _ in 0..num_colors {
         colors.push(Rgb::from_openrgb(r.u32()?));
+    }
+
+    let zone_leds: u32 = zones.iter().map(|z| z.leds_count).sum();
+    if zone_leds as usize != leds.len() || leds.len() != colors.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("controller data doesn't add up ({zone_leds} zone LEDs, {} LEDs, {} colors)", leds.len(), colors.len()),
+        ));
     }
 
     Ok(Controller {
