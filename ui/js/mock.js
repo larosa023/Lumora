@@ -1,0 +1,192 @@
+// Stand-in backend for `npm run preview`, so the UI can be worked on in a plain
+// browser. Inside the app, bridge.js talks to the real Rust engine instead.
+
+import { build, ledPositions } from './effects.js';
+
+const fx = (id, name, description, category, [min, max], speed, size, direction, colors) => ({
+  id, name, description, category, min_colors: min, max_colors: max,
+  uses_speed: speed, uses_size: !!size, uses_direction: direction, size_label: size || '', default_colors: colors,
+});
+
+const EFFECTS = [
+  fx('static', 'Static', 'One solid color', 'Solid', [1, 1], false, null, false, ['#7c5cff']),
+  fx('gradient', 'Gradient', 'A still blend across your LEDs', 'Solid', [2, 6], false, null, true, ['#ff3d7f', '#7c5cff', '#00d4ff']),
+  fx('breathing', 'Breathing', 'Slow fade in and out, cycling colors', 'Calm', [1, 6], true, null, false, ['#00d4ff', '#7c5cff']),
+  fx('spectrum', 'Spectrum', 'Everything drifts through the rainbow', 'Calm', [0, 0], true, null, false, []),
+  fx('aurora', 'Aurora', 'Soft, shifting northern lights', 'Calm', [2, 6], true, 'Scale', false, ['#00ffa3', '#00b3ff', '#8a5cff', '#ff4fd8']),
+  fx('rainbow_wave', 'Rainbow', 'The classic rolling rainbow', 'Wave', [0, 0], true, 'Wavelength', true, []),
+  fx('color_wave', 'Color Wave', 'Your colors rolling across', 'Wave', [2, 6], true, 'Wavelength', true, ['#7c5cff', '#00d4ff', '#ff3da8']),
+  fx('ripple', 'Ripple', 'Rings pulsing out from the center', 'Wave', [1, 6], true, 'Ring width', true, ['#00d4ff', '#ff3da8']),
+  fx('comet', 'Comet', 'A bright head with a fading tail', 'Motion', [1, 2], true, 'Tail length', true, ['#ffffff', '#2a0f5c']),
+  fx('marquee', 'Marquee', 'Theater-style chasing dashes', 'Motion', [1, 4], true, 'Dash size', true, ['#ffb000', '#ff3d7f']),
+  fx('twinkle', 'Starfield', 'Random sparkles fading in and out', 'Motion', [1, 6], true, 'Density', false, ['#ffffff', '#9ad7ff', '#c7a6ff']),
+  fx('fire', 'Fire', 'Flickering flames', 'Motion', [3, 3], true, 'Flame height', true, ['#ff1e00', '#ff8a00', '#ffe066']),
+];
+
+function linear(zones) {
+  let start = 0;
+  return zones.map(([name, count]) => {
+    const z = { name, kind: count === 1 ? 'single' : 'linear', start, count };
+    start += count;
+    return z;
+  });
+}
+
+function keyboard() {
+  const rows = ['1111111111111111', '1111111111111011', '1111111111111111', '1111111111110101', '1111111111110111', '1110001001111111'];
+  const map = [];
+  let n = 0;
+  for (const r of rows) for (const c of r) map.push(c === '1' ? n++ : null);
+  return [{ name: 'Keyboard', kind: 'matrix', start: 0, count: n, matrix: { width: 16, height: 6, map } }];
+}
+
+const dev = (id, name, kind, zones) => ({
+  id: 'demo:' + id, name, vendor: 'Lumora', kind, location: 'Demo device', zones,
+  led_count: zones.reduce((a, z) => a + z.count, 0), controllable: true, virtual_device: true,
+});
+
+const DEVICES = [
+  dev('kbd', 'Demo Keyboard 75%', 'keyboard', keyboard()),
+  dev('mouse', 'Demo Mouse', 'mouse', linear([['Logo', 1], ['Scroll Wheel', 1], ['Underglow', 10]])),
+  dev('ram1', 'Demo DDR5 Stick 1', 'ram', linear([['DRAM', 12]])),
+  dev('ram2', 'Demo DDR5 Stick 2', 'ram', linear([['DRAM', 12]])),
+  dev('gpu', 'Demo Graphics Card', 'gpu', linear([['Light Bar', 18]])),
+  dev('aio', 'Demo AIO Cooler', 'cooler', linear([['Pump', 16], ['Fan 1', 12], ['Fan 2', 12], ['Fan 3', 12]])),
+  dev('strip', 'Demo Case Strip', 'led_strip', linear([['Strip', 40]])),
+];
+
+const preset = (name, effect, colors, speed, size, direction) => ({
+  name, global: { effect, colors, speed, size, direction }, overrides: {}, brightness: 100,
+});
+
+const state = {
+  snapshot: {
+    connection: { status: 'offline', server: '127.0.0.1:6742', message: "OpenRGB isn't running, or its SDK server is off", protocol: 0 },
+    devices: DEVICES,
+    global: { effect: 'color_wave', colors: ['#7c5cff', '#00d4ff', '#ff3da8'], speed: 40, size: 50, direction: 'right' },
+    overrides: {},
+    brightness: 100,
+    enabled: true,
+  },
+  effects: EFFECTS,
+  settings: {
+    host: '127.0.0.1', port: 6742, fps: 30, theme: 'dark', accent: '#7c5cff', accent_follows_lighting: false,
+    demo_devices: 'auto', start_minimized: false, close_to_tray: true, check_for_updates: true,
+  },
+  profiles: [
+    preset('Neon Drift', 'color_wave', ['#7c5cff', '#00d4ff', '#ff3da8'], 40, 50, 'right'),
+    preset('Arctic', 'aurora', ['#e8fbff', '#00d4ff', '#3d6bff'], 25, 60, 'right'),
+    preset('Ember', 'fire', ['#ff1e00', '#ff8a00', '#ffe066'], 45, 55, 'up'),
+    preset('Focus', 'static', ['#ffd7a8'], 0, 50, 'right'),
+    preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
+  ],
+  active_profile: null,
+  launch_at_login: false,
+  version: '0.1.0-preview',
+};
+
+const listeners = {};
+const emit = (ev, payload) => (listeners[ev] || []).forEach((cb) => cb({ payload }));
+const changed = () => emit('lumora://changed', structuredClone(state.snapshot));
+const clone = (v) => structuredClone(v);
+
+// --- Render loop: same idea as the Rust engine ------------------------------
+const runtimes = DEVICES.map((d) => ({ dev: d, leds: ledPositions(d), cfg: null, render: null, out: [] }));
+let preview = false;
+let fade = 1;
+const start = performance.now();
+let last = start;
+setInterval(() => {
+  const now = performance.now();
+  const t = (now - start) / 1000, dt = Math.min((now - last) / 1000, 0.25);
+  last = now;
+  const s = state.snapshot;
+  const target = s.enabled ? 1 : 0;
+  fade = fade < target ? Math.min(fade + dt * 3, 1) : Math.max(fade - dt * 3, 0);
+  const level = (s.brightness / 100) ** 2 * fade;
+  const frames = {};
+  for (const r of runtimes) {
+    const cfg = s.overrides[r.dev.id] || s.global;
+    const key = JSON.stringify(cfg);
+    if (r.cfg !== key) {
+      r.cfg = key;
+      r.render = build(cfg, EFFECTS.find((e) => e.id === cfg.effect), r.dev.led_count);
+      r.out = new Array(r.dev.led_count).fill([0, 0, 0]);
+    }
+    r.render(t, dt, r.leds, r.out);
+    if (!preview) continue;
+    let bin = '';
+    for (const c of r.out) bin += String.fromCharCode(...c.map((v) => Math.round(v * level)));
+    frames[r.dev.id] = btoa(bin);
+  }
+  if (preview) emit('lumora://frames', frames);
+}, 1000 / 30);
+
+const commands = {
+  get_state: () => clone({ ...state, snapshot: state.snapshot }),
+  get_snapshot: () => clone(state.snapshot),
+  set_effect: ({ device, config }) => {
+    if (device) state.snapshot.overrides[device] = config;
+    else state.snapshot.global = config;
+    changed();
+  },
+  clear_override: ({ device }) => { delete state.snapshot.overrides[device]; changed(); },
+  sync_all: ({ config }) => { state.snapshot.global = config; state.snapshot.overrides = {}; changed(); },
+  set_brightness: ({ value }) => { state.snapshot.brightness = value; changed(); },
+  set_enabled: ({ on }) => { state.snapshot.enabled = on; changed(); },
+  set_preview: ({ on }) => { preview = on; },
+  save_profile: ({ name }) => {
+    const p = { name, global: clone(state.snapshot.global), overrides: clone(state.snapshot.overrides), brightness: state.snapshot.brightness };
+    const i = state.profiles.findIndex((x) => x.name.toLowerCase() === name.toLowerCase());
+    if (i >= 0) state.profiles[i] = p; else state.profiles.push(p);
+    state.active_profile = name;
+    return clone(state.profiles);
+  },
+  load_profile: ({ name }) => {
+    const p = state.profiles.find((x) => x.name === name);
+    Object.assign(state.snapshot, { global: clone(p.global), overrides: clone(p.overrides), brightness: p.brightness, enabled: true });
+    state.active_profile = name;
+    changed();
+  },
+  delete_profile: ({ name }) => {
+    state.profiles = state.profiles.filter((p) => p.name !== name);
+    if (state.active_profile === name) state.active_profile = null;
+    return clone(state.profiles);
+  },
+  update_settings: ({ settings }) => { state.settings = settings; return clone(settings); },
+  reconnect: () => {
+    state.snapshot.connection.status = 'connecting';
+    changed();
+    setTimeout(() => { state.snapshot.connection.status = 'offline'; changed(); }, 900);
+  },
+  set_launch_at_login: ({ on }) => (state.launch_at_login = on),
+  open_external: ({ url }) => { window.open(url, '_blank'); },
+  // Add ?update to the preview URL to try the update flow.
+  check_update: () => new Promise((resolve) => setTimeout(() => resolve(location.search.includes('update') ? {
+    version: '0.2.0', current_version: state.version, date: '2026-11-12',
+    notes: 'New Audio Visualizer effect\nFaster device detection on startup\nFixed RAM sticks occasionally showing the wrong color',
+  } : null), 700)),
+  install_update: () => new Promise((resolve) => {
+    const total = 9.4 * 1048576;
+    let downloaded = 0;
+    const tick = setInterval(() => {
+      downloaded = Math.min(total, downloaded + total / 25);
+      emit('lumora://update-progress', { downloaded, total });
+      if (downloaded >= total) { clearInterval(tick); setTimeout(resolve, 600); }
+    }, 80);
+  }),
+};
+
+export const mock = {
+  invoke: async (cmd, args = {}) => {
+    if (!commands[cmd]) throw new Error('Unknown command ' + cmd);
+    return commands[cmd](args);
+  },
+  listen: async (ev, cb) => {
+    (listeners[ev] ||= []).push(cb);
+    return () => (listeners[ev] = listeners[ev].filter((x) => x !== cb));
+  },
+  window: {
+    minimize() {}, toggleMaximize() {}, close() {}, startDragging() {},
+  },
+};

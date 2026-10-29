@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumora</title>
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"><i></i><i></i><i></i></div>
+
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <img src="logo.svg" alt="" width="22" height="22">
+      <span>Lumora</span>
+    </div>
+    <div class="titlebar-spacer" data-tauri-drag-region></div>
+
+    <button class="update-pill" id="updatePill" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+      <span>Update ready</span>
+    </button>
+
+    <div class="profile-menu">
+      <button class="pill" id="profileBtn" aria-haspopup="menu" aria-expanded="false">
+        <span class="pill-label">Profile</span>
+        <span id="profileName">Unsaved</span>
+        <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5"/></svg>
+      </button>
+      <div class="menu" id="profileMenu" role="menu" hidden></div>
+    </div>
+
+    <button class="power" id="powerBtn" role="switch" aria-checked="true" title="Turn all lights on or off">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+      <span id="powerLabel">Lights on</span>
+    </button>
+    <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+    <div class="win-controls" id="winControls">
+      <button id="winMin" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+      <button id="winMax" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg></button>
+      <button id="winClose" class="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" aria-label="Devices">
+      <button class="nav-item nav-all" data-device="" aria-current="true">
+        <span class="nav-icon" data-icon="all"></span>
+        <span class="nav-name">All devices</span>
+        <span class="nav-count" id="deviceCount">0</span>
+      </button>
+      <div class="device-groups" id="deviceList"></div>
+      <div class="connection" id="connection">
+        <span class="status-dot"></span>
+        <div class="connection-text">
+          <strong id="connTitle">Connecting…</strong>
+          <span id="connDetail"></span>
+        </div>
+        <button class="text-btn" id="connAction" hidden>Set up</button>
+      </div>
+    </nav>
+
+    <main class="main">
+      <section class="stage" id="stage" aria-live="polite">
+        <div class="stage-head">
+          <div>
+            <h1 id="stageTitle">All devices</h1>
+            <p id="stageSub"></p>
+          </div>
+          <div class="stage-actions" id="stageActions"></div>
+        </div>
+        <div class="stage-body" id="stageBody"></div>
+      </section>
+
+      <section class="shelf" aria-label="Effects">
+        <div class="effect-grid" id="effectGrid" role="radiogroup" aria-label="Effect"></div>
+      </section>
+    </main>
+
+    <aside class="inspector" id="inspector" aria-label="Effect settings">
+      <div class="inspector-head">
+        <h2 id="effectName">Effect</h2>
+        <p id="effectDesc"></p>
+      </div>
+
+      <div class="control" id="colorsControl">
+        <div class="control-label"><span>Colors</span><span class="hint" id="colorHint"></span></div>
+        <div class="color-row" id="colorRow"></div>
+        <div class="palettes" id="palettes"></div>
+      </div>
+
+      <div class="control" id="speedControl">
+        <label class="control-label" for="speed"><span>Speed</span><output id="speedOut"></output></label>
+        <input type="range" id="speed" min="0" max="100">
+      </div>
+
+      <div class="control" id="sizeControl">
+        <label class="control-label" for="size"><span id="sizeLabel">Size</span><output id="sizeOut"></output></label>
+        <input type="range" id="size" min="0" max="100">
+      </div>
+
+      <div class="control" id="directionControl">
+        <div class="control-label"><span>Direction</span></div>
+        <div class="segmented" id="direction" role="radiogroup" aria-label="Direction"></div>
+      </div>
+
+      <div class="inspector-foot">
+        <div class="control">
+          <label class="control-label" for="brightness"><span>Brightness</span><output id="brightnessOut"></output></label>
+          <input type="range" id="brightness" min="0" max="100">
+          <p class="hint">Applies to every device</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <dialog class="sheet" id="settings" aria-labelledby="settingsTitle">
+    <form method="dialog" class="sheet-inner">
+      <header class="sheet-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button class="icon-btn" value="close" aria-label="Close settings"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </header>
+
+      <section class="sheet-section">
+        <h3>Theme</h3>
+        <div class="theme-grid" id="themeGrid" role="radiogroup" aria-label="Theme"></div>
+        <h3>Accent</h3>
+        <div class="accent-row" id="accentRow"></div>
+        <label class="toggle-row">
+          <span><strong>Match my lighting</strong><small>Tint the interface with the colors on your devices</small></span>
+          <input type="checkbox" class="switch" id="accentFollow">
+        </label>
+      </section>
+
+      <section class="sheet-section">
+        <h3>OpenRGB connection</h3>
+        <p class="sheet-note">Lumora reaches your hardware through OpenRGB, which supports hundreds of RAM, motherboard, GPU, cooler, fan, keyboard and mouse controllers. Open OpenRGB, go to the SDK Server tab and click Start Server. Lumora connects on its own.</p>
+        <div class="field-row">
+          <label class="field"><span>Host</span><input id="host" spellcheck="false" autocomplete="off"></label>
+          <label class="field field-port"><span>Port</span><input id="port" inputmode="numeric" autocomplete="off"></label>
+          <button type="button" class="btn" id="reconnectBtn">Reconnect</button>
+        </div>
+        <p class="sheet-status" id="settingsStatus"></p>
+        <button type="button" class="text-btn" id="getOpenRgb">Download OpenRGB</button>
+      </section>
+
+      <section class="sheet-section">
+        <h3>Demo devices</h3>
+        <div class="segmented" id="demoMode" role="radiogroup" aria-label="Demo devices">
+          <button type="button" data-v="auto" role="radio">When nothing's connected</button>
+          <button type="button" data-v="always" role="radio">Always</button>
+          <button type="button" data-v="never" role="radio">Never</button>
+        </div>
+      </section>
+
+      <section class="sheet-section">
+        <h3>Performance</h3>
+        <p class="sheet-note">Frame rate for animated effects. Static colors cost nothing either way.</p>
+        <div class="segmented" id="fps" role="radiogroup" aria-label="Frame rate">
+          <button type="button" data-v="20" role="radio">20 fps, lightest</button>
+          <button type="button" data-v="30" role="radio">30 fps</button>
+          <button type="button" data-v="60" role="radio">60 fps, smoothest</button>
+        </div>
+      </section>
+
+      <section class="sheet-section">
+        <h3>Updates</h3>
+        <div class="update-row">
+          <p class="sheet-note" id="updateStatus">You're on Lumora 0.1.0.</p>
+          <button type="button" class="btn" id="checkUpdateBtn">Check for updates</button>
+        </div>
+        <label class="toggle-row"><span><strong>Check automatically</strong><small>Lumora looks for new versions in the background and lets you know</small></span><input type="checkbox" class="switch" id="autoUpdate"></label>
+      </section>
+
+      <section class="sheet-section">
+        <h3>Startup</h3>
+        <label class="toggle-row"><span><strong>Launch when I sign in</strong><small>Your lighting comes back on its own after a restart</small></span><input type="checkbox" class="switch" id="autostart"></label>
+        <label class="toggle-row"><span><strong>Start in the tray</strong><small>Open quietly without showing the window</small></span><input type="checkbox" class="switch" id="startMin"></label>
+        <label class="toggle-row"><span><strong>Keep running when closed</strong><small>Closing the window keeps effects playing from the tray</small></span><input type="checkbox" class="switch" id="closeTray"></label>
+      </section>
+
+      <footer class="sheet-foot" id="about"></footer>
+    </form>
+  </dialog>
+
+  <dialog class="sheet update-sheet" id="updateDialog" aria-labelledby="updateTitle">
+    <div class="sheet-inner">
+      <header class="sheet-head">
+        <h2 id="updateTitle">Lumora is ready to update</h2>
+      </header>
+      <section class="sheet-section">
+        <p class="update-versions" id="updateVersions"></p>
+        <div class="update-notes" id="updateNotes"></div>
+        <div class="progress" id="updateProgress" hidden><i></i></div>
+        <p class="sheet-status" id="updateProgressText" hidden></p>
+      </section>
+      <footer class="update-actions">
+        <button type="button" class="btn" id="updateLater">Later</button>
+        <button type="button" class="btn primary" id="updateInstall">Install and restart</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

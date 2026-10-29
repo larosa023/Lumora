@@ -1,0 +1,10 @@
+[package]
+name = "lumora-core"
+description = "Lumora's RGB engine: OpenRGB SDK client, effects and profiles"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

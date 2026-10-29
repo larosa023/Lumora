@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17142a"/>
+      <stop offset="1" stop-color="#07070c"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0.1" y1="0.1" x2="0.9" y2="0.9">
+      <stop offset="0" stop-color="#8b6bff"/>
+      <stop offset="0.5" stop-color="#00d4ff"/>
+      <stop offset="1" stop-color="#ff3da8"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="250" fill="none" stroke="url(#ring)" stroke-width="96" opacity="0.75" filter="url(#glow)"/>
+  <circle cx="512" cy="512" r="250" fill="none" stroke="url(#ring)" stroke-width="84"/>
+  <circle cx="512" cy="512" r="250" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="10" filter="url(#soft)"/>
+  <circle cx="689" cy="335" r="40" fill="#ffffff"/>
+  <circle cx="689" cy="335" r="70" fill="#ffffff" opacity="0.35" filter="url(#soft)"/>
+</svg>

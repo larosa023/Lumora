@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+      - name: Engine tests (uses a fake OpenRGB server)
+        run: cargo test -p lumora-core
+      - name: App builds
+        run: cargo build -p lumora
+      - name: UI scripts parse
+        run: for f in ui/js/*.js scripts/*.mjs; do node --check "$f"; done

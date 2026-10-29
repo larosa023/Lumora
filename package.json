@@ -1,0 +1,17 @@
+{
+  "name": "lumora",
+  "private": true,
+  "version": "0.1.0",
+  "description": "One lightweight app for all your RGB",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "preview": "node scripts/preview.mjs",
+    "icons": "tauri icon assets/logo.png",
+    "mock": "cargo run -p lumora-core --example mock_server",
+    "release": "node scripts/release.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

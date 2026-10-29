@@ -1,0 +1,888 @@
+import { api, decodeFrame } from './bridge.js';
+import { build, hexToRgb } from './effects.js';
+import { DeviceView } from './render.js';
+import { openPicker, closePicker } from './picker.js';
+import { icon } from './icons.js';
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+const GROUPS = [
+  ['keyboard', 'Keyboards'], ['keypad', 'Keypads'], ['mouse', 'Mice'], ['mousemat', 'Mousepads'],
+  ['headset', 'Headsets'], ['headset_stand', 'Headset stands'], ['gamepad', 'Controllers'],
+  ['ram', 'Memory'], ['gpu', 'Graphics'], ['cooler', 'Cooling'], ['motherboard', 'Motherboards'],
+  ['led_strip', 'Light strips'], ['case', 'Case'], ['light', 'Lights'], ['speaker', 'Speakers'],
+  ['microphone', 'Microphones'], ['storage', 'Storage'], ['accessory', 'Accessories'], ['other', 'Other'],
+];
+
+const PALETTES = [
+  ['Neon', ['#7c5cff', '#00d4ff', '#ff3da8']],
+  ['Sunset', ['#ff5a1f', '#ff3d7f', '#7c3dff']],
+  ['Ocean', ['#00ffd5', '#00a2ff', '#3d3dff']],
+  ['Forest', ['#7dff3d', '#00ff85', '#00a37a']],
+  ['Candy', ['#ff7ad9', '#ffd1f0', '#8ae6ff']],
+  ['Ember', ['#ff1e00', '#ff8a00', '#ffe066']],
+  ['Vapor', ['#ff71ce', '#01cdfe', '#b967ff', '#fffb96']],
+  ['Mono', ['#ffffff', '#5c5c70']],
+];
+
+const THEMES = [
+  ['dark', 'Ink', { bg: '#0f0e17', surface: '#1d1b29', stage: '#0b0a12' }],
+  ['oled', 'OLED black', { bg: '#000000', surface: '#0d0d12', stage: '#000000' }],
+  ['midnight', 'Midnight', { bg: '#0a1020', surface: '#152038', stage: '#070c19' }],
+  ['light', 'Daylight', { bg: '#e9ebf2', surface: '#ffffff', stage: '#15141d' }],
+  ['frost', 'Frost', { bg: 'linear-gradient(135deg,#3b2a6e,#0c4a63)', surface: 'rgba(255,255,255,.18)', stage: 'rgba(0,0,0,.45)' }],
+];
+
+const ACCENTS = ['#7c5cff', '#3d6bff', '#00b3ff', '#00c9a7', '#3ddc97', '#ffb000', '#ff5a1f', '#ff3d7f'];
+
+// Effects that look wrong in arbitrary colors start from their own palette.
+const SIGNATURE_PALETTES = new Set(['fire']);
+
+const DIRECTIONS = [['left', 'Left'], ['right', 'Right'], ['up', 'Up'], ['down', 'Down'], ['out', 'Outward'], ['in', 'Inward']];
+
+const state = {
+  app: null,
+  selected: '', // '' = all devices
+  views: new Map(),
+  lastColors: new Map(),
+  tiles: [],
+};
+
+const snap = () => state.app.snapshot;
+
+/** Display names, numbered when several devices share one (two identical RAM sticks). */
+function labels() {
+  const count = {}, seen = {}, out = {};
+  for (const d of devices()) count[d.name] = (count[d.name] || 0) + 1;
+  for (const d of devices()) {
+    seen[d.name] = (seen[d.name] || 0) + 1;
+    out[d.id] = count[d.name] > 1 && !/\d$/.test(d.name) ? `${d.name} ${seen[d.name]}` : d.name;
+  }
+  return out;
+}
+const devices = () => snap().devices;
+const selectedDevice = () => devices().find((d) => d.id === state.selected) || null;
+const effectById = (id) => state.app.effects.find((e) => e.id === id) || state.app.effects[0];
+const currentConfig = () => (state.selected && snap().overrides[state.selected]) || snap().global;
+
+// --- Sending changes --------------------------------------------------------
+
+// Slider drags send at most one update per animation frame.
+let pending = null;
+function applyConfig(cfg) {
+  if (state.selected) snap().overrides[state.selected] = cfg;
+  else snap().global = cfg;
+  if (!pending) {
+    requestAnimationFrame(() => {
+      const { device, config } = pending;
+      pending = null;
+      api.invoke('set_effect', { device, config });
+    });
+  }
+  pending = { device: state.selected || null, config: cfg };
+  markProfileModified();
+  renderEffects();
+  renderInspector();
+  renderStageHead();
+  renderSidebar();
+}
+
+function colorsFor(effect, from) {
+  if (!effect.max_colors) return [];
+  let colors = (from || []).slice(0, effect.max_colors);
+  if (colors.length < effect.min_colors) {
+    const fill = effect.default_colors.filter((c) => !colors.includes(c));
+    colors = colors.concat(fill).slice(0, Math.max(effect.min_colors, colors.length));
+  }
+  return colors;
+}
+
+function selectEffect(id) {
+  const cfg = currentConfig();
+  const e = effectById(id);
+  // Carry the user's colors over to the new effect where it uses colors.
+  const own = SIGNATURE_PALETTES.has(id) && cfg.effect !== id;
+  const keep = cfg.colors.length && !own ? cfg.colors : e.default_colors;
+  applyConfig({ ...cfg, effect: id, colors: colorsFor(e, keep) });
+}
+
+// --- Sidebar ----------------------------------------------------------------
+
+function renderSidebar() {
+  const list = devices();
+  const names = labels();
+  $('#deviceCount').textContent = list.length;
+  const all = document.querySelector('.nav-all');
+  all.setAttribute('aria-current', String(!state.selected));
+  all.querySelector('.nav-icon').innerHTML = icon('all');
+
+  const html = GROUPS.map(([kind, label]) => {
+    const items = list.filter((d) => d.kind === kind);
+    if (!items.length) return '';
+    return `<div class="group-title">${label}</div>` + items.map((d) => {
+      const custom = snap().overrides[d.id];
+      return `<button class="nav-item${d.controllable ? '' : ' unsupported'}" data-device="${esc(d.id)}" aria-current="${state.selected === d.id}" title="${esc(d.vendor ? d.vendor + ' ' + d.name : d.name)}">
+        <span class="nav-icon">${icon(d.kind)}</span>
+        <span class="nav-name">${esc(names[d.id])}</span>
+        ${custom ? '<span class="nav-badge">Custom</span>' : ''}
+        <span class="nav-glow" data-glow="${esc(d.id)}"></span>
+      </button>`;
+    }).join('');
+  }).join('');
+  $('#deviceList').innerHTML = html;
+  paintGlows();
+}
+
+function paintGlows() {
+  for (const el of document.querySelectorAll('[data-glow]')) {
+    const c = averageOf(state.lastColors.get(el.dataset.glow));
+    if (c) el.style.setProperty('--c', `${c[0] | 0} ${c[1] | 0} ${c[2] | 0}`);
+  }
+}
+
+function averageOf(colors) {
+  if (!colors || !colors.length) return null;
+  let r = 0, g = 0, b = 0;
+  for (const c of colors) { r += c[0]; g += c[1]; b += c[2]; }
+  return [r / colors.length, g / colors.length, b / colors.length];
+}
+
+document.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-device]');
+  if (!item) return;
+  select(item.dataset.device);
+});
+
+function select(id) {
+  state.selected = id;
+  closePicker();
+  renderSidebar();
+  renderStage();
+  renderEffects();
+  renderInspector();
+}
+
+function renderConnection() {
+  const c = snap().connection;
+  const box = $('#connection');
+  box.dataset.status = c.status;
+  const demo = devices().some((d) => d.virtual_device);
+  const titles = { connected: 'OpenRGB connected', connecting: 'Looking for OpenRGB…', offline: demo ? 'Showing demo devices' : 'OpenRGB offline' };
+  $('#connTitle').textContent = titles[c.status];
+  $('#connDetail').textContent = c.status === 'connected' ? c.message : c.status === 'offline' ? 'Start OpenRGB to connect' : c.server;
+  $('#connAction').hidden = c.status === 'connected';
+  const s = $('#settingsStatus');
+  if (s) s.textContent = c.status === 'connected' ? `Connected to ${c.server}. ${c.message}.` : c.message || 'Connecting…';
+}
+
+$('#connAction').addEventListener('click', () => openSettings('#host'));
+
+// --- Stage ------------------------------------------------------------------
+
+const resizer = new ResizeObserver((entries) => {
+  for (const en of entries) state.views.get(en.target.dataset.view)?.resize();
+});
+
+function makeView(canvas, device, opts) {
+  canvas.dataset.view = device.id;
+  const v = new DeviceView(canvas, device, opts);
+  const last = state.lastColors.get(device.id);
+  if (last) v.update(last);
+  state.views.set(device.id, v);
+  resizer.observe(canvas);
+  return v;
+}
+
+function renderStageHead() {
+  const d = selectedDevice();
+  const actions = $('#stageActions');
+  if (!d) {
+    const list = devices();
+    const custom = list.filter((x) => snap().overrides[x.id]).length;
+    $('#stageTitle').textContent = 'All devices';
+    const demo = list.some((x) => x.virtual_device);
+    $('#stageSub').textContent = demo
+      ? 'These are demo devices. Connect OpenRGB to light up your own.'
+      : !list.length
+        ? ''
+        : custom
+          ? `Effects here apply to every device except the ${custom === 1 ? 'one' : custom} with ${custom === 1 ? 'its' : 'their'} own effect.`
+          : `One effect across all ${list.length} devices, in sync.`;
+    actions.innerHTML = custom ? `<button class="chip accent" id="syncAll">${icon('reset')}Sync all devices</button>` : '';
+    $('#syncAll')?.addEventListener('click', () => {
+      api.invoke('sync_all', { config: snap().global });
+      snap().overrides = {};
+      markProfileModified();
+      renderAll();
+      toast('Every device now runs the same effect');
+    });
+    return;
+  }
+  $('#stageTitle').textContent = labels()[d.id];
+  const bits = [d.vendor, `${d.led_count} LED${d.led_count === 1 ? '' : 's'}`, d.zones.length > 1 ? `${d.zones.length} zones` : ''].filter(Boolean);
+  $('#stageSub').textContent = d.controllable ? bits.join(', ') : 'OpenRGB has no direct mode for this device, so Lumora can’t animate it.';
+  const custom = !!snap().overrides[d.id];
+  actions.innerHTML = custom
+    ? `<span class="chip">Own effect</span><button class="chip" id="useShared">${icon('reset')}Follow all devices</button>`
+    : '<span class="chip">Following all devices</span>';
+  $('#useShared')?.addEventListener('click', () => {
+    delete snap().overrides[d.id];
+    api.invoke('clear_override', { device: d.id });
+    markProfileModified();
+    renderAll();
+  });
+}
+
+function renderStage() {
+  for (const v of state.views.values()) resizer.unobserve(v.canvas);
+  state.views.clear();
+  const body = $('#stageBody');
+  renderStageHead();
+  const d = selectedDevice();
+  if (d) {
+    body.innerHTML = '<canvas class="stage-single"></canvas>';
+    makeView(body.querySelector('canvas'), d, { padding: 0.1 });
+    return;
+  }
+  const list = devices();
+  if (!list.length) {
+    body.innerHTML = `<div class="empty"><strong>No devices yet</strong><span>OpenRGB is connected but hasn’t detected any RGB hardware. Run a rescan in OpenRGB and your devices appear here.</span></div>`;
+    return;
+  }
+  const names = labels();
+  body.innerHTML = `<div class="rig">${list.map((x) => {
+    const wide = ['keyboard', 'led_strip', 'gpu', 'cooler'].includes(x.kind) || x.led_count > 40;
+    return `<button class="rig-card${wide ? ' wide' : ''}" data-device="${esc(x.id)}" aria-label="${esc(names[x.id])}">
+      <canvas></canvas>
+      <span class="rig-label"><span>${esc(names[x.id])}</span>${snap().overrides[x.id] ? '<span class="nav-badge">Custom</span>' : ''}</span>
+    </button>`;
+  }).join('')}</div>`;
+  body.querySelectorAll('.rig-card').forEach((card, i) => makeView(card.querySelector('canvas'), list[i], { padding: 0.12, bloom: 0.9 }));
+}
+
+// --- Effects shelf -----------------------------------------------------------
+
+const TILE_LEDS = Array.from({ length: 28 }, (_, i) => ({ x: i / 27, y: 0.5 }));
+
+function renderEffects() {
+  const cfg = currentConfig();
+  const grid = $('#effectGrid');
+  if (!grid.children.length) {
+    grid.innerHTML = state.app.effects.map((e) => `<button class="effect-tile" role="radio" data-effect="${e.id}" title="${esc(e.description)}">
+      <canvas width="168" height="26"></canvas><span>${esc(e.name)}</span></button>`).join('');
+    grid.addEventListener('click', (ev) => {
+      const t = ev.target.closest('[data-effect]');
+      if (t) selectEffect(t.dataset.effect);
+    });
+  }
+  state.tiles = [...grid.children].map((tile) => {
+    const e = effectById(tile.dataset.effect);
+    tile.setAttribute('aria-checked', String(e.id === cfg.effect));
+    const keep = cfg.colors.length ? cfg.colors : e.default_colors;
+    const tcfg = { ...cfg, effect: e.id, colors: colorsFor(e, keep), speed: Math.max(cfg.speed, 30), size: 50 };
+    return { canvas: tile.querySelector('canvas'), render: build(tcfg, e, TILE_LEDS.length), out: new Array(TILE_LEDS.length).fill([0, 0, 0]) };
+  });
+}
+
+let tileLast = performance.now();
+function animateTiles(now) {
+  const t = now / 1000, dt = Math.min((now - tileLast) / 1000, 0.1);
+  tileLast = now;
+  if (!document.hidden) {
+    for (const tile of state.tiles) {
+      tile.render(t, dt, TILE_LEDS, tile.out);
+      const ctx = tile.canvas.getContext('2d');
+      const w = tile.canvas.width, h = tile.canvas.height, step = w / TILE_LEDS.length;
+      ctx.clearRect(0, 0, w, h);
+      tile.out.forEach((c, i) => {
+        ctx.fillStyle = `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+        ctx.fillRect(i * step, 0, step + 0.6, h);
+      });
+    }
+  }
+  requestAnimationFrame(animateTiles);
+}
+
+// --- Inspector --------------------------------------------------------------
+
+function setRange(el, value) {
+  el.value = value;
+  el.style.setProperty('--p', `${value}%`);
+}
+
+function renderInspector() {
+  const cfg = currentConfig();
+  const e = effectById(cfg.effect);
+  $('#effectName').textContent = e.name;
+  $('#effectDesc').textContent = e.description;
+
+  // Colors
+  const colorsCtl = $('#colorsControl');
+  colorsCtl.hidden = e.max_colors === 0;
+  if (e.max_colors > 0) {
+    const row = $('#colorRow');
+    const canRemove = cfg.colors.length > Math.max(e.min_colors, 1);
+    row.innerHTML = cfg.colors.map((c, i) => `<button class="color-chip" style="--c:${c}" data-i="${i}" aria-label="Color ${i + 1}, ${c}"></button>`).join('')
+      + (cfg.colors.length < e.max_colors ? `<button class="color-add" aria-label="Add a color" title="Add a color">${icon('plus')}</button>` : '');
+    row.querySelectorAll('.color-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const i = +chip.dataset.i;
+        openPicker(chip, currentConfig().colors[i], (hex) => {
+          const c = currentConfig();
+          const colors = c.colors.slice();
+          colors[i] = hex;
+          chip.style.setProperty('--c', hex);
+          applyConfigQuiet({ ...c, colors });
+        }, canRemove ? {
+          onRemove: () => {
+            const c = currentConfig();
+            applyConfig({ ...c, colors: c.colors.filter((_, k) => k !== i) });
+          },
+        } : {});
+      });
+    });
+    row.querySelector('.color-add')?.addEventListener('click', () => {
+      const c = currentConfig();
+      const next = PALETTES.flatMap((p) => p[1]).find((x) => !c.colors.includes(x)) || '#ffffff';
+      applyConfig({ ...c, colors: [...c.colors, next] });
+      row.querySelector(`[data-i="${c.colors.length}"]`)?.click();
+    });
+    const hint = e.min_colors === e.max_colors ? (e.max_colors === 1 ? '' : `${e.max_colors} colors`) : `up to ${e.max_colors}`;
+    $('#colorHint').textContent = hint;
+    const pal = $('#palettes');
+    pal.hidden = e.max_colors < 2;
+    if (!pal.children.length) {
+      pal.innerHTML = PALETTES.map(([name, cols]) => `<button class="palette" data-p="${name}" title="${name}"><i style="--g:linear-gradient(90deg,${cols.join(',')})"></i><small>${name}</small></button>`).join('');
+      pal.addEventListener('click', (ev) => {
+        const b = ev.target.closest('[data-p]');
+        if (!b) return;
+        const c = currentConfig();
+        const eff = effectById(c.effect);
+        const cols = PALETTES.find((p) => p[0] === b.dataset.p)[1];
+        applyConfig({ ...c, colors: colorsFor(eff, cols) });
+      });
+    }
+  }
+
+  $('#speedControl').hidden = !e.uses_speed;
+  setRange($('#speed'), cfg.speed);
+  $('#speedOut').textContent = cfg.speed;
+
+  $('#sizeControl').hidden = !e.uses_size;
+  $('#sizeLabel').textContent = e.size_label || 'Size';
+  setRange($('#size'), cfg.size);
+  $('#sizeOut').textContent = cfg.size;
+
+  $('#directionControl').hidden = !e.uses_direction;
+  const dirs = e.id === 'ripple' ? DIRECTIONS.filter(([d]) => d === 'in' || d === 'out') : DIRECTIONS;
+  const dirEl = $('#direction');
+  const active = e.id === 'ripple' && cfg.direction !== 'in' ? 'out' : cfg.direction;
+  dirEl.innerHTML = dirs.map(([d, label]) => `<button role="radio" data-dir="${d}" aria-checked="${active === d}" title="${label}" aria-label="${label}">${icon(d)}</button>`).join('');
+
+  setRange($('#brightness'), snap().brightness);
+  $('#brightnessOut').textContent = snap().brightness + '%';
+}
+
+// Live picker drags: update the lights without re-rendering the picker away.
+function applyConfigQuiet(cfg) {
+  if (state.selected) snap().overrides[state.selected] = cfg;
+  else snap().global = cfg;
+  if (!pending) {
+    requestAnimationFrame(() => {
+      const { device, config } = pending;
+      pending = null;
+      api.invoke('set_effect', { device, config });
+      renderEffects();
+    });
+  }
+  pending = { device: state.selected || null, config: cfg };
+  markProfileModified();
+}
+
+for (const key of ['speed', 'size']) {
+  $('#' + key).addEventListener('input', (ev) => {
+    const v = +ev.target.value;
+    setRange(ev.target, v);
+    $(`#${key}Out`).textContent = v;
+    applyConfigQuiet({ ...currentConfig(), [key]: v });
+  });
+  $('#' + key).addEventListener('change', () => renderEffects());
+}
+
+$('#direction').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-dir]');
+  if (b) applyConfig({ ...currentConfig(), direction: b.dataset.dir });
+});
+
+let brightnessTimer = null;
+$('#brightness').addEventListener('input', (ev) => {
+  const v = +ev.target.value;
+  setRange(ev.target, v);
+  $('#brightnessOut').textContent = v + '%';
+  snap().brightness = v;
+  if (!brightnessTimer) {
+    brightnessTimer = setTimeout(() => {
+      brightnessTimer = null;
+      api.invoke('set_brightness', { value: snap().brightness });
+    }, 40);
+  }
+  markProfileModified();
+});
+
+// --- Power ------------------------------------------------------------------
+
+function renderPower() {
+  const on = snap().enabled;
+  $('#powerBtn').setAttribute('aria-checked', String(on));
+  $('#powerLabel').textContent = on ? 'Lights on' : 'Lights off';
+}
+
+$('#powerBtn').addEventListener('click', () => {
+  snap().enabled = !snap().enabled;
+  api.invoke('set_enabled', { on: snap().enabled });
+  renderPower();
+});
+
+// --- Profiles ---------------------------------------------------------------
+
+let profileModified = false;
+function markProfileModified() {
+  if (state.app.active_profile && !profileModified) {
+    profileModified = true;
+    renderProfileName();
+  }
+}
+
+function renderProfileName() {
+  const name = state.app.active_profile;
+  $('#profileName').textContent = name ? name + (profileModified ? ' (edited)' : '') : 'Unsaved';
+}
+
+function profileGradient(p) {
+  const cols = p.global.colors.length ? p.global.colors : ['#ff2d55', '#ffd400', '#00ff85', '#00d4ff', '#7c5cff'];
+  return cols.length === 1 ? cols[0] : `linear-gradient(135deg,${cols.join(',')})`;
+}
+
+function renderProfileMenu() {
+  const menu = $('#profileMenu');
+  const active = state.app.active_profile;
+  menu.innerHTML = state.app.profiles.map((p) => `<div class="menu-item" role="menuitemradio" tabindex="0" aria-checked="${p.name === active}" data-load="${esc(p.name)}">
+      <span class="menu-swatch" style="--g:${profileGradient(p)}"></span>
+      <span class="menu-text">${esc(p.name)}</span>
+      <button class="menu-del" data-del="${esc(p.name)}" aria-label="Delete ${esc(p.name)}" title="Delete">${icon('trash')}</button>
+    </div>`).join('')
+    + (state.app.profiles.length ? '<div class="menu-sep"></div>' : '')
+    + (active && profileModified ? `<button class="menu-item" data-update="${esc(active)}">${icon('save')}<span class="menu-text">Update ${esc(active)}</span></button>` : '')
+    + `<form class="menu-save" id="saveForm"><input id="saveName" placeholder="Save current lighting as…" maxlength="40" aria-label="Profile name"><button class="btn primary">Save</button></form>`;
+}
+
+async function saveProfile(name) {
+  try {
+    state.app.profiles = await api.invoke('save_profile', { name });
+    state.app.active_profile = name.trim();
+    profileModified = false;
+    renderProfileName();
+    closeMenu();
+    toast(`Saved ${name.trim()}`);
+  } catch (err) {
+    toast(String(err));
+  }
+}
+
+function closeMenu() {
+  $('#profileMenu').hidden = true;
+  $('#profileBtn').setAttribute('aria-expanded', 'false');
+}
+
+$('#profileBtn').addEventListener('click', () => {
+  const menu = $('#profileMenu');
+  if (!menu.hidden) return closeMenu();
+  renderProfileMenu();
+  menu.hidden = false;
+  $('#profileBtn').setAttribute('aria-expanded', 'true');
+});
+
+$('#profileMenu').addEventListener('click', async (ev) => {
+  const del = ev.target.closest('[data-del]');
+  if (del) {
+    ev.stopPropagation();
+    state.app.profiles = await api.invoke('delete_profile', { name: del.dataset.del });
+    if (state.app.active_profile === del.dataset.del) state.app.active_profile = null;
+    renderProfileName();
+    renderProfileMenu();
+    return;
+  }
+  const upd = ev.target.closest('[data-update]');
+  if (upd) return saveProfile(upd.dataset.update);
+  const load = ev.target.closest('[data-load]');
+  if (load) {
+    await api.invoke('load_profile', { name: load.dataset.load });
+    state.app.active_profile = load.dataset.load;
+    profileModified = false;
+    renderProfileName();
+    closeMenu();
+    await refreshSnapshot();
+  }
+});
+
+$('#profileMenu').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.dataset.load) ev.target.click();
+});
+
+$('#profileMenu').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const name = $('#saveName').value.trim();
+  if (name) saveProfile(name);
+});
+
+document.addEventListener('pointerdown', (ev) => {
+  if (!ev.target.closest('.profile-menu')) closeMenu();
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeMenu();
+});
+
+// --- Theme & accent -------------------------------------------------------------
+
+let followed = null;
+function applyTheme() {
+  const s = state.app.settings;
+  document.documentElement.dataset.theme = s.theme;
+  if (!s.accent_follows_lighting) document.documentElement.style.setProperty('--accent', s.accent);
+  for (const v of state.views.values()) v.refreshTheme();
+}
+
+// Every few frames, tint the stage (and optionally the accent) from the lights.
+let lastAmbient = 0;
+function updateAmbient(now) {
+  if (now - lastAmbient < 120) return;
+  lastAmbient = now;
+  const ids = state.selected ? [state.selected] : [...state.views.keys()];
+  let r = 0, g = 0, b = 0, n = 0;
+  let vivid = null, vividScore = 0;
+  for (const id of ids) {
+    const cols = state.lastColors.get(id);
+    if (!cols) continue;
+    for (const c of cols) {
+      r += c[0]; g += c[1]; b += c[2]; n++;
+      const max = Math.max(...c), min = Math.min(...c);
+      const score = max * (max - min);
+      if (score > vividScore) { vividScore = score; vivid = c; }
+    }
+  }
+  if (!n) return;
+  const avg = [r / n, g / n, b / n];
+  // Boost so dim scenes still read, without blowing out bright ones.
+  const peak = Math.max(...avg, 1);
+  const k = Math.min(255 / peak, 3) * 0.9;
+  document.documentElement.style.setProperty('--ambient', avg.map((v) => Math.round(Math.min(v * k, 255))).join(' '));
+  if (state.app.settings.accent_follows_lighting && vivid && vividScore > 4000) {
+    followed = followed ? followed.map((v, i) => v + (vivid[i] - v) * 0.25) : vivid.slice();
+    const m = Math.max(...followed, 1), boost = 230 / m;
+    document.documentElement.style.setProperty('--accent', `rgb(${followed.map((v) => Math.round(Math.min(v * boost, 255))).join(',')})`);
+  }
+}
+
+// --- Settings ---------------------------------------------------------------
+
+async function saveSettings(patch) {
+  Object.assign(state.app.settings, patch);
+  applyTheme();
+  try {
+    state.app.settings = await api.invoke('update_settings', { settings: state.app.settings });
+  } catch (err) {
+    toast(String(err));
+  }
+  renderSettings();
+}
+
+function setRadio(container, value) {
+  container.querySelectorAll('[data-v]').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.v === String(value))));
+}
+
+function renderSettings() {
+  const s = state.app.settings;
+  $('#themeGrid').innerHTML = THEMES.map(([id, name, t]) => `<button type="button" class="theme-card" role="radio" data-theme-id="${id}" aria-checked="${s.theme === id}" style="--t-bg:${t.bg};--t-surface:${t.surface};--t-stage:${t.stage}"><span class="thumb"></span><span>${name}</span></button>`).join('');
+  const custom = !ACCENTS.includes(s.accent);
+  $('#accentRow').innerHTML = ACCENTS.map((c) => `<button type="button" class="accent-dot" style="--c:${c}" data-accent="${c}" role="radio" aria-checked="${!s.accent_follows_lighting && s.accent === c}" aria-label="Accent ${c}"></button>`).join('')
+    + `<button type="button" class="accent-dot custom" id="accentCustom" style="--c:${s.accent}" aria-checked="${!s.accent_follows_lighting && custom}" aria-label="Custom accent">${icon('plus')}</button>`;
+  $('#accentFollow').checked = s.accent_follows_lighting;
+  if (document.activeElement !== $('#host')) $('#host').value = s.host;
+  if (document.activeElement !== $('#port')) $('#port').value = s.port;
+  setRadio($('#fps'), s.fps);
+  setRadio($('#demoMode'), s.demo_devices);
+  $('#startMin').checked = s.start_minimized;
+  $('#closeTray').checked = s.close_to_tray;
+  $('#autostart').checked = state.app.launch_at_login;
+  $('#autoUpdate').checked = s.check_for_updates;
+  renderUpdateStatus();
+  $('#about').textContent = `Lumora ${state.app.version}${api.inApp ? '' : ' (browser preview with demo devices)'}`;
+  renderConnection();
+}
+
+function openSettings(focus) {
+  renderSettings();
+  $('#settings').showModal();
+  if (focus) $(focus).focus();
+}
+
+$('#settingsBtn').addEventListener('click', () => openSettings());
+$('#themeGrid').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-theme-id]');
+  if (b) saveSettings({ theme: b.dataset.themeId });
+});
+$('#accentRow').addEventListener('click', (ev) => {
+  const dot = ev.target.closest('[data-accent]');
+  if (dot) return saveSettings({ accent: dot.dataset.accent, accent_follows_lighting: false });
+  const custom = ev.target.closest('#accentCustom');
+  if (custom) {
+    openPicker(custom, state.app.settings.accent, (hex) => {
+      state.app.settings.accent = hex;
+      state.app.settings.accent_follows_lighting = false;
+      document.documentElement.style.setProperty('--accent', hex);
+    });
+    const done = () => {
+      if (!document.querySelector('.picker')) {
+        saveSettings({});
+        document.removeEventListener('pointerup', done);
+      }
+    };
+    setTimeout(() => document.addEventListener('pointerup', done), 0);
+  }
+});
+$('#accentFollow').addEventListener('change', (ev) => {
+  followed = null;
+  saveSettings({ accent_follows_lighting: ev.target.checked });
+});
+$('#fps').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-v]');
+  if (b) saveSettings({ fps: +b.dataset.v });
+});
+$('#demoMode').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-v]');
+  if (b) saveSettings({ demo_devices: b.dataset.v });
+});
+$('#host').addEventListener('change', (ev) => saveSettings({ host: ev.target.value.trim() || '127.0.0.1' }));
+$('#port').addEventListener('change', (ev) => {
+  const port = parseInt(ev.target.value, 10);
+  if (port > 0 && port < 65536) saveSettings({ port });
+  else ev.target.value = state.app.settings.port;
+});
+$('#reconnectBtn').addEventListener('click', () => api.invoke('reconnect'));
+$('#startMin').addEventListener('change', (ev) => saveSettings({ start_minimized: ev.target.checked }));
+$('#closeTray').addEventListener('change', (ev) => saveSettings({ close_to_tray: ev.target.checked }));
+$('#autostart').addEventListener('change', async (ev) => {
+  try {
+    state.app.launch_at_login = await api.invoke('set_launch_at_login', { on: ev.target.checked });
+  } catch (err) {
+    toast(String(err));
+  }
+  ev.target.checked = state.app.launch_at_login;
+});
+$('#getOpenRgb').addEventListener('click', () => api.invoke('open_external', { url: 'https://openrgb.org/' }));
+$('#settings').addEventListener('close', closePicker);
+$('#settings').addEventListener('click', (ev) => {
+  if (ev.target === $('#settings')) $('#settings').close();
+});
+
+// --- Updates ------------------------------------------------------------------
+
+let update = null;
+
+function setUpdate(info) {
+  update = info;
+  $('#updatePill').hidden = !info;
+  renderUpdateStatus();
+}
+
+function renderUpdateStatus(text) {
+  const v = state.app.version;
+  $('#updateStatus').textContent = text || (update ? `Lumora ${update.version} is available. You're on ${v}.` : `You're on Lumora ${v}.`);
+  $('#checkUpdateBtn').textContent = update ? 'Install update' : 'Check for updates';
+}
+
+function formatMB(bytes) {
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function openUpdate() {
+  if (!update) return;
+  $('#updateVersions').textContent = `Version ${update.version}${update.date ? `, released ${update.date}` : ''}. You have ${update.current_version}.`;
+  $('#updateNotes').textContent = update.notes || '';
+  $('#updateProgress').hidden = true;
+  $('#updateProgressText').hidden = true;
+  $('#updateInstall').disabled = false;
+  $('#updateLater').disabled = false;
+  if ($('#settings').open) $('#settings').close();
+  $('#updateDialog').showModal();
+}
+
+$('#updatePill').addEventListener('click', openUpdate);
+$('#updateLater').addEventListener('click', () => $('#updateDialog').close());
+
+$('#checkUpdateBtn').addEventListener('click', async () => {
+  if (update) return openUpdate();
+  const btn = $('#checkUpdateBtn');
+  btn.disabled = true;
+  renderUpdateStatus('Checking for updates…');
+  try {
+    const info = await api.invoke('check_update');
+    setUpdate(info);
+    if (info) openUpdate();
+    else renderUpdateStatus(`You're up to date on Lumora ${state.app.version}.`);
+  } catch (err) {
+    renderUpdateStatus(String(err));
+  }
+  btn.disabled = false;
+});
+
+$('#updateInstall').addEventListener('click', async () => {
+  $('#updateInstall').disabled = true;
+  $('#updateLater').disabled = true;
+  const bar = $('#updateProgress');
+  bar.hidden = false;
+  bar.classList.add('indeterminate');
+  const text = $('#updateProgressText');
+  text.hidden = false;
+  text.textContent = 'Starting download…';
+  try {
+    await api.invoke('install_update');
+    // The app restarts on its own once the new version is in place.
+    bar.classList.remove('indeterminate');
+    bar.style.setProperty('--p', '100%');
+    text.textContent = 'Installed. Restarting Lumora…';
+  } catch (err) {
+    bar.hidden = true;
+    text.textContent = String(err);
+    $('#updateLater').disabled = false;
+    // The failed download is spent; look again so "Try again" has something to install.
+    try {
+      const info = await api.invoke('check_update');
+      setUpdate(info);
+      $('#updateInstall').disabled = !info;
+      $('#updateInstall').textContent = 'Try again';
+    } catch {
+      /* keep the error message showing */
+    }
+  }
+});
+
+function onUpdateProgress({ downloaded, total }) {
+  const bar = $('#updateProgress');
+  const text = $('#updateProgressText');
+  if (total) {
+    bar.classList.remove('indeterminate');
+    const pct = Math.min(100, (downloaded / total) * 100);
+    bar.style.setProperty('--p', pct + '%');
+    text.textContent = pct >= 100 ? 'Installing… Lumora restarts in a moment.' : `Downloading ${formatMB(downloaded)} of ${formatMB(total)}`;
+  } else {
+    text.textContent = `Downloading ${formatMB(downloaded)}`;
+  }
+}
+
+$('#autoUpdate').addEventListener('change', (ev) => saveSettings({ check_for_updates: ev.target.checked }));
+
+// --- Toast --------------------------------------------------------------------
+
+let toastTimer;
+function toast(text) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 2200);
+}
+
+// --- Window controls ------------------------------------------------------------
+
+$('#winMin').addEventListener('click', () => api.window.minimize());
+$('#winMax').addEventListener('click', () => api.window.toggleMaximize());
+$('#winClose').addEventListener('click', () => api.window.close());
+
+// --- Backend events --------------------------------------------------------------
+
+function renderAll() {
+  renderSidebar();
+  renderStage();
+  renderEffects();
+  renderInspector();
+  renderPower();
+  renderConnection();
+}
+
+function deviceSignature(list) {
+  return list.map((d) => d.id + ':' + d.led_count).join('|');
+}
+
+function onSnapshot(next) {
+  const devicesChanged = deviceSignature(next.devices) !== deviceSignature(snap().devices);
+  // Ignore echoes of edits still in flight from this window.
+  if (pending) {
+    next.global = snap().global;
+    next.overrides = snap().overrides;
+  }
+  state.app.snapshot = next;
+  if (state.selected && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
+  if (devicesChanged) {
+    renderAll();
+  } else {
+    renderConnection();
+    renderPower();
+    renderStageHead();
+    if (!document.querySelector('.picker') && document.activeElement?.type !== 'range') {
+      renderInspector();
+      renderEffects();
+    }
+  }
+}
+
+async function refreshSnapshot() {
+  onSnapshot(await api.invoke('get_snapshot'));
+  renderAll();
+}
+
+let glowTimer = 0;
+function onFrames(frames) {
+  for (const [id, b64] of Object.entries(frames)) {
+    const colors = decodeFrame(b64);
+    state.lastColors.set(id, colors);
+    state.views.get(id)?.update(colors);
+  }
+  const now = performance.now();
+  updateAmbient(now);
+  if (now - glowTimer > 150) {
+    glowTimer = now;
+    paintGlows();
+  }
+}
+
+async function init() {
+  if (!api.inApp) document.body.classList.add('browser');
+  state.app = await api.invoke('get_state');
+  applyTheme();
+  renderAll();
+  renderProfileName();
+  requestAnimationFrame(animateTiles);
+
+  await api.listen('lumora://changed', (e) => onSnapshot(e.payload));
+  await api.listen('lumora://frames', (e) => onFrames(e.payload));
+  await api.listen('lumora://update-progress', (e) => onUpdateProgress(e.payload));
+  await api.listen('lumora://update-available', (e) => {
+    const fresh = !update;
+    setUpdate(e.payload);
+    if (fresh) toast(`Lumora ${e.payload.version} is available`);
+  });
+  const preview = () => api.invoke('set_preview', { on: !document.hidden });
+  document.addEventListener('visibilitychange', preview);
+  window.addEventListener('focus', preview);
+  preview();
+  window.addEventListener('resize', () => closePicker());
+}
+
+init().catch((err) => {
+  document.body.innerHTML = `<div class="empty"><strong>Lumora couldn't start</strong><span>${esc(err?.message || err)}</span></div>`;
+});
+
+// Exposed for quick inspection from devtools.
+window.lumora = { state, hexToRgb };
