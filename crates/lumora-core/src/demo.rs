@@ -27,6 +27,7 @@ fn device(id: &str, name: &str, vendor: &str, kind: DeviceKind, zones: Vec<ZoneI
         zones,
         controllable: true,
         virtual_device: true,
+        managed: true,
     }
 }
 

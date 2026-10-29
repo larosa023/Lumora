@@ -70,13 +70,15 @@ struct Runtime {
     raw: Vec<Rgb>,
     sent: Option<Vec<Rgb>>,
     previewed: Option<Vec<Rgb>>,
+    /// Switch to the per-LED mode before the next frame is sent.
+    needs_custom_mode: bool,
 }
 
 impl Runtime {
     fn new(info: DeviceInfo, sink: Sink) -> Self {
         let leds = info.led_positions();
         let n = info.led_count;
-        Runtime { info, leds, sink, cfg: None, effect: None, raw: vec![Rgb::BLACK; n], sent: None, previewed: None }
+        Runtime { info, leds, sink, cfg: None, effect: None, raw: vec![Rgb::BLACK; n], sent: None, previewed: None, needs_custom_mode: true }
     }
 }
 
@@ -174,7 +176,14 @@ impl Engine {
         let s = self.shared.lock();
         Snapshot {
             connection: s.connection.clone(),
-            devices: s.devices().map(|d| d.info.clone()).collect(),
+            devices: s
+                .devices()
+                .map(|d| {
+                    let mut info = d.info.clone();
+                    info.managed = d.info.virtual_device || s.settings.controls(&info.id, &info.vendor);
+                    info
+                })
+                .collect(),
             global: s.lighting.global.clone(),
             overrides: s.lighting.overrides.clone(),
             brightness: s.lighting.brightness,
@@ -347,11 +356,6 @@ fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controll
         .zip(ids)
         .map(|((i, c), id)| Runtime::new(DeviceInfo::from_controller(c, id), Sink::OpenRgb(*i)))
         .collect();
-    for r in &runtimes {
-        if let (Sink::OpenRgb(i), true) = (&r.sink, r.info.controllable) {
-            client.set_custom_mode(*i)?;
-        }
-    }
     let count = runtimes.len();
     {
         let mut s = shared.lock();
@@ -389,6 +393,7 @@ fn run(shared: Arc<Shared>) {
     let mut failures = 0u32;
     // When some devices didn't answer, look again a little later.
     let mut retry_at: Option<Instant> = None;
+    let mut retries = 0u32;
 
     while !shared.stop.load(Ordering::SeqCst) {
         // --- Connection upkeep -------------------------------------------------
@@ -428,6 +433,7 @@ fn run(shared: Arc<Shared>) {
             if rescan {
                 // The server re-detects, then announces the new list.
                 let _ = c.rescan();
+                retries = 0;
                 retry_at = Some(Instant::now() + Duration::from_secs(15));
             }
             if retry_at.is_some_and(|t| Instant::now() >= t) {
@@ -453,7 +459,16 @@ fn run(shared: Arc<Shared>) {
                 Ok(Ok((mut c, controllers, skipped))) => match install(&shared, &mut c, controllers, skipped) {
                     Ok(()) => {
                         failures = 0;
-                        retry_at = (skipped > 0).then(|| Instant::now() + Duration::from_secs(20));
+                        // Retry a few times, further apart each time (20s, 60s, 3 min).
+                        retry_at = if skipped > 0 && retries < 3 {
+                            retries += 1;
+                            Some(Instant::now() + Duration::from_secs([20, 60, 180][retries as usize - 1]))
+                        } else {
+                            if skipped == 0 {
+                                retries = 0;
+                            }
+                            None
+                        };
                         Conn::Ready(c)
                     }
                     Err(_) => Conn::Idle,
@@ -484,6 +499,7 @@ fn run(shared: Arc<Shared>) {
         last = now;
 
         let mut outgoing: Vec<(u32, Vec<Rgb>)> = Vec::new();
+        let mut take_over: Vec<u32> = Vec::new();
         let mut previews: Vec<(String, Vec<u8>)> = Vec::new();
         let (animating, fps) = {
             let mut guard = shared.lock();
@@ -501,7 +517,18 @@ fn run(shared: Arc<Shared>) {
             let mut animating = fading;
             let lighting = &s.lighting;
             let preview = s.preview;
+            let settings = &s.settings;
             for d in s.real.iter_mut().chain(s.demo.iter_mut()) {
+                // Left to its own app (NZXT CAM, …): send nothing at all.
+                if !d.info.virtual_device && !settings.controls(&d.info.id, &d.info.vendor) {
+                    d.sent = None;
+                    d.needs_custom_mode = true;
+                    if preview && d.previewed.is_some() {
+                        d.previewed = None;
+                        previews.push((d.info.id.clone(), Vec::new()));
+                    }
+                    continue;
+                }
                 let cfg = lighting.overrides.get(&d.info.id).unwrap_or(&lighting.global);
                 if d.cfg.as_ref() != Some(cfg) {
                     d.effect = Some(effects::build(cfg, d.info.led_count));
@@ -513,6 +540,10 @@ fn run(shared: Arc<Shared>) {
 
                 let out: Vec<Rgb> = d.raw.iter().map(|c| c.scale(level)).collect();
                 if let (Sink::OpenRgb(i), true) = (&d.sink, d.info.controllable) {
+                    if d.needs_custom_mode {
+                        take_over.push(*i);
+                        d.needs_custom_mode = false;
+                    }
                     if d.sent.as_ref() != Some(&out) {
                         outgoing.push((*i, out.clone()));
                         d.sent = Some(out.clone());
@@ -527,6 +558,9 @@ fn run(shared: Arc<Shared>) {
         };
 
         if let Conn::Ready(c) = &mut conn {
+            for i in &take_over {
+                let _ = c.set_custom_mode(*i);
+            }
             for (i, colors) in &outgoing {
                 if c.update_leds(*i, colors).is_err() {
                     break; // The liveness check above handles reconnecting.

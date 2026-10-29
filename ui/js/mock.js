@@ -42,7 +42,7 @@ function keyboard() {
 
 const dev = (id, name, kind, zones) => ({
   id: 'demo:' + id, name, vendor: 'Lumora', kind, location: 'Demo device', zones,
-  led_count: zones.reduce((a, z) => a + z.count, 0), controllable: true, virtual_device: true,
+  led_count: zones.reduce((a, z) => a + z.count, 0), controllable: true, virtual_device: true, managed: true,
 });
 
 const DEVICES = [
@@ -137,6 +137,13 @@ const commands = {
   set_enabled: ({ on }) => { state.snapshot.enabled = on; changed(); },
   set_preview: ({ on }) => { preview = on; },
   rescan: () => {},
+  set_device_control: ({ device, on }) => {
+    state.settings.device_control = { ...(state.settings.device_control || {}), [device]: on };
+    const d = state.snapshot.devices.find((x) => x.id === device);
+    if (d) d.managed = on;
+    changed();
+    return structuredClone(state.settings);
+  },
   resize_zone: () => {},
   save_profile: ({ name }) => {
     const p = { name, global: clone(state.snapshot.global), overrides: clone(state.snapshot.overrides), brightness: state.snapshot.brightness };

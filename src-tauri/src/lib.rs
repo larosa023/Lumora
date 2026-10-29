@@ -207,6 +207,17 @@ fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Sett
     Ok(settings)
 }
 
+/// Lets Lumora drive a device's lights, or leaves it to the vendor's own app.
+#[tauri::command]
+fn set_device_control(app: State<App>, device: String, on: bool) -> CmdResult<Settings> {
+    let mut settings = app.settings.lock().unwrap().clone();
+    settings.device_control.insert(device, on);
+    app.store.save_settings(&settings).map_err(|e| e.to_string())?;
+    app.engine.apply_settings(settings.clone());
+    *app.settings.lock().unwrap() = settings.clone();
+    Ok(settings)
+}
+
 #[tauri::command]
 fn rescan(app: State<App>) {
     app.engine.rescan();
@@ -489,6 +500,7 @@ pub fn run() {
             reconnect,
             rescan,
             resize_zone,
+            set_device_control,
             set_launch_at_login,
             open_external,
             check_update,

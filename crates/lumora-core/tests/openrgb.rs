@@ -64,15 +64,30 @@ fn engine_drives_real_devices() {
     assert_eq!(kbd.led_count, 9);
     assert!(kbd.zones[0].matrix.is_some());
     assert!(changes.load(Ordering::SeqCst) > 0);
-    wait_for("direct mode", || server.received.lock().unwrap().custom_mode.len() == 7);
+    wait_for("direct mode", || server.received.lock().unwrap().custom_mode.len() == 6);
 
     // A static color reaches every device…
     let teal = Rgb::new(0, 200, 180);
     engine.sync_all(EffectConfig { effect: "static".into(), colors: vec![teal], ..Default::default() });
     wait_for("static frame", || {
         let r = server.received.lock().unwrap();
-        (0..7).all(|i| r.leds.get(&i).is_some_and(|l| !l.is_empty() && l.iter().all(|c| *c == teal)))
+        (0..7).filter(|&i| i != 3).all(|i| r.leds.get(&i).is_some_and(|l| !l.is_empty() && l.iter().all(|c| *c == teal)))
     });
+
+    // The NZXT cooler is left to NZXT CAM by default: never touched…
+    let kraken = snap.devices.iter().find(|d| d.vendor == "NZXT").unwrap().clone();
+    assert!(!kraken.managed);
+    assert!(!server.received.lock().unwrap().custom_mode.contains(&3));
+    assert!(server.received.lock().unwrap().leds.get(&3).is_none());
+    // …until the user hands it to Lumora.
+    let mut settings = Settings { port: server.port, ..Default::default() };
+    settings.device_control.insert(kraken.id.clone(), true);
+    engine.apply_settings(settings.clone());
+    wait_for("kraken taken over", || {
+        let r = server.received.lock().unwrap();
+        r.custom_mode.contains(&3) && r.leds.get(&3).is_some_and(|l| l.iter().all(|c| *c == teal))
+    });
+    assert!(engine.snapshot().devices.iter().find(|d| d.id == kraken.id).unwrap().managed);
 
     // …and then isn't re-sent while nothing changes.
     let before = server.received.lock().unwrap().led_updates;

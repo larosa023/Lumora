@@ -101,6 +101,8 @@ pub struct DeviceInfo {
     /// `false` when the device has no direct/per-LED mode, so Lumora can't animate it.
     pub controllable: bool,
     pub virtual_device: bool,
+    /// Lumora is driving this device (vs. leaving it to the vendor's own app).
+    pub managed: bool,
 }
 
 /// Where an LED sits, normalized to 0..=1 within its device.
@@ -158,6 +160,7 @@ impl DeviceInfo {
             // A device whose headers are all still empty is controllable once sized.
             controllable: c.supports_direct() && (start > 0 || c.zones.iter().any(|z| z.leds_max > z.leds_min)),
             virtual_device: false,
+            managed: true,
         }
     }
 

@@ -41,6 +41,9 @@ pub struct Settings {
     /// Run the hardware engine that ships inside Lumora (Windows). Off means
     /// "connect to an OpenRGB I run myself".
     pub builtin_engine: bool,
+    /// Per-device choice of whether Lumora drives the lights, by device id.
+    /// Devices not listed use [`default_control`].
+    pub device_control: BTreeMap<String, bool>,
 }
 
 impl Default for Settings {
@@ -57,11 +60,25 @@ impl Default for Settings {
             close_to_tray: true,
             check_for_updates: true,
             builtin_engine: true,
+            device_control: BTreeMap::new(),
         }
     }
 }
 
+/// Vendors whose own app usually stays installed for cooling or screens, so
+/// Lumora leaves their lighting alone until asked.
+pub const LEAVE_ALONE_BY_DEFAULT: &[&str] = &["NZXT"];
+
+pub fn default_control(vendor: &str) -> bool {
+    !LEAVE_ALONE_BY_DEFAULT.iter().any(|v| v.eq_ignore_ascii_case(vendor.trim()))
+}
+
 impl Settings {
+    /// Whether Lumora drives this device's lights.
+    pub fn controls(&self, id: &str, vendor: &str) -> bool {
+        self.device_control.get(id).copied().unwrap_or_else(|| default_control(vendor))
+    }
+
     pub fn sanitized(mut self) -> Self {
         self.fps = self.fps.clamp(10, 60);
         if self.host.trim().is_empty() {

@@ -109,6 +109,46 @@ function selectEffect(id) {
 
 // --- Sidebar ----------------------------------------------------------------
 
+// --- Who controls a device -----------------------------------------------------
+
+/** The vendor app that usually owns this device's lighting, if known. */
+function vendorApp(d) {
+  return /nzxt/i.test(d.vendor) ? 'NZXT CAM' : null;
+}
+
+function handsOffBadge(d, short) {
+  const app = vendorApp(d);
+  const text = short ? (app ? app.replace(/^NZXT /, '') : 'Off') : app ? 'In ' + app : 'Not controlled';
+  return `<span class="nav-badge muted" title="${esc(app ? 'Lighting is left to ' + app : 'Lumora isn\u2019t controlling this device')}">${esc(text)}</span>`;
+}
+
+async function setControl(d, on) {
+  state.app.settings.device_control = { ...(state.app.settings.device_control || {}), [d.id]: on };
+  d.managed = on;
+  try {
+    state.app.settings = await api.invoke('set_device_control', { device: d.id, on });
+  } catch (err) {
+    toast(String(err));
+  }
+  renderAll();
+  toast(on ? `Lumora now controls ${labels()[d.id]}` : `${labels()[d.id]} is left to ${vendorApp(d) || 'its own app'}`);
+}
+
+function askControl(d) {
+  const app = vendorApp(d);
+  if (!app) return setControl(d, true);
+  $('#controlTitle').textContent = `Control ${labels()[d.id]} with Lumora?`;
+  $('#controlText').textContent = `While ${app} is open, it keeps applying its own lighting, so the colors can flicker between the two apps. Quit ${app}, or turn its lighting off, for steady colors.`;
+  $('#controlKeep').textContent = `Pump and fan speeds and the screen stay with ${app}. Lumora only changes the lighting, and you can hand it back any time.`;
+  $('#controlDialog').showModal();
+  $('#controlGo').onclick = () => {
+    $('#controlDialog').close();
+    setControl(d, true);
+  };
+}
+
+$('#controlCancel').addEventListener('click', () => $('#controlDialog').close());
+
 function renderSidebar() {
   const list = devices();
   const names = labels();
@@ -125,7 +165,7 @@ function renderSidebar() {
       return `<button class="nav-item${d.controllable ? '' : ' unsupported'}" data-device="${esc(d.id)}" aria-current="${state.selected === d.id}" title="${esc(d.vendor ? d.vendor + ' ' + d.name : d.name)}">
         <span class="nav-icon">${icon(d.kind)}</span>
         <span class="nav-name">${esc(names[d.id])}</span>
-        ${custom ? '<span class="nav-badge">Custom</span>' : ''}
+        ${!d.managed ? handsOffBadge(d, true) : custom ? '<span class="nav-badge">Custom</span>' : ''}
         <span class="nav-glow" data-glow="${esc(d.id)}"></span>
       </button>`;
     }).join('');
@@ -156,6 +196,7 @@ document.addEventListener('click', (e) => {
 
 function select(id) {
   state.selected = id;
+  document.body.classList.toggle('device-hands-off', !!selectedDevice() && !selectedDevice().managed);
   closePicker();
   renderSidebar();
   renderStage();
@@ -304,7 +345,9 @@ function renderStageHead() {
   const d = selectedDevice();
   const actions = $('#stageActions');
   if (!d) {
-    const list = devices();
+    const all = devices();
+    const list = all.filter((x) => x.managed);
+    const handsOff = all.filter((x) => !x.managed);
     const custom = list.filter((x) => snap().overrides[x.id]).length;
     $('#stageTitle').textContent = 'All devices';
     const demo = list.some((x) => x.virtual_device);
@@ -315,6 +358,10 @@ function renderStageHead() {
         : custom
           ? `Effects here apply to every device except the ${custom === 1 ? 'one' : custom} with ${custom === 1 ? 'its' : 'their'} own effect.`
           : `One effect across all ${list.length} devices, in sync.`;
+    if (handsOff.length && !demo) {
+      const names = labels();
+      $('#stageSub').textContent += ` ${handsOff.map((x) => names[x.id]).join(' and ')} ${handsOff.length === 1 ? 'is' : 'are'} left to ${vendorApp(handsOff[0]) || 'its own app'}.`;
+    }
     const boardless = !list.some((x) => !x.virtual_device && (x.kind === 'ram' || x.kind === 'motherboard'));
     const offerFull = engine().full_access === 'off' && boardless;
     actions.innerHTML = (offerFull ? `<button class="chip" id="addBoard">${icon('ram')}Add RAM &amp; motherboard</button>` : '')
@@ -333,9 +380,22 @@ function renderStageHead() {
   const bits = [d.vendor, `${d.led_count} LED${d.led_count === 1 ? '' : 's'}`, d.zones.length > 1 ? `${d.zones.length} zones` : ''].filter(Boolean);
   $('#stageSub').textContent = d.controllable ? bits.join(', ') : 'OpenRGB has no direct mode for this device, so Lumora can’t animate it.';
   const custom = !!snap().overrides[d.id];
-  actions.innerHTML = custom
-    ? `<span class="chip">Own effect</span><button class="chip" id="useShared">${icon('reset')}Follow all devices</button>`
-    : '<span class="chip">Following all devices</span>';
+  const control = d.virtual_device ? '' : `<label class="chip control-chip" title="Choose whether Lumora changes this device's lighting">
+      <span>Controlled by Lumora</span><input type="checkbox" class="switch small" id="controlSwitch" ${d.managed ? 'checked' : ''}>
+    </label>`;
+  actions.innerHTML = !d.managed
+    ? control
+    : (custom
+      ? `<span class="chip">Own effect</span><button class="chip" id="useShared">${icon('reset')}Follow all devices</button>`
+      : '<span class="chip">Following all devices</span>') + control;
+  $('#controlSwitch')?.addEventListener('change', (ev) => {
+    if (ev.target.checked) {
+      ev.target.checked = false;
+      askControl(d);
+    } else {
+      setControl(d, false);
+    }
+  });
   $('#useShared')?.addEventListener('click', () => {
     delete snap().overrides[d.id];
     api.invoke('clear_override', { device: d.id });
@@ -362,6 +422,17 @@ function renderStage() {
           </label>`).join('')}
         </div>` : '');
     makeView(body.querySelector('canvas'), d, { padding: 0.1 });
+    if (!d.managed) {
+      body.querySelector('canvas').classList.add('dimmed');
+      body.querySelector('.zone-setup')?.remove();
+      const app = vendorApp(d);
+      body.insertAdjacentHTML('beforeend', `<div class="hands-off">
+        <strong>${app ? `Lighting is left to ${esc(app)}` : 'Lumora isn\u2019t controlling this device'}</strong>
+        <span>${app ? `Lumora doesn\u2019t touch this device, so ${esc(app)} keeps its lighting, cooling and screen exactly as you set them.` : 'Lumora doesn\u2019t send anything to this device.'}</span>
+        <button class="btn primary" id="takeControl">Control with Lumora</button>
+      </div>`);
+      $('#takeControl').addEventListener('click', () => askControl(d));
+    }
     body.querySelectorAll('[data-zone]').forEach((input) => {
       input.addEventListener('change', () => {
         const [min, max] = d.zones[+input.dataset.zone].resizable;
@@ -381,9 +452,9 @@ function renderStage() {
   const names = labels();
   body.innerHTML = `<div class="rig">${list.map((x) => {
     const wide = ['keyboard', 'led_strip', 'gpu', 'cooler'].includes(x.kind) || x.led_count > 40;
-    return `<button class="rig-card${wide ? ' wide' : ''}" data-device="${esc(x.id)}" aria-label="${esc(names[x.id])}">
+    return `<button class="rig-card${wide ? ' wide' : ''}${x.managed ? '' : ' hands-off-card'}" data-device="${esc(x.id)}" aria-label="${esc(names[x.id])}">
       <canvas></canvas>
-      <span class="rig-label"><span>${esc(names[x.id])}</span>${x.led_count === 0 ? '<span class="nav-badge">Set up LEDs</span>' : snap().overrides[x.id] ? '<span class="nav-badge">Custom</span>' : ''}</span>
+      <span class="rig-label"><span>${esc(names[x.id])}</span>${!x.managed ? handsOffBadge(x) : x.led_count === 0 ? '<span class="nav-badge">Set up LEDs</span>' : snap().overrides[x.id] ? '<span class="nav-badge">Custom</span>' : ''}</span>
     </button>`;
   }).join('')}</div>`;
   body.querySelectorAll('.rig-card').forEach((card, i) => makeView(card.querySelector('canvas'), list[i], { padding: 0.12, bloom: 0.9 }));
@@ -938,6 +1009,7 @@ $('#winClose').addEventListener('click', () => api.window.close());
 // --- Backend events --------------------------------------------------------------
 
 function renderAll() {
+  document.body.classList.toggle('device-hands-off', !!selectedDevice() && !selectedDevice().managed);
   renderSidebar();
   renderStage();
   renderEffects();

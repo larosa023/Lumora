@@ -848,6 +848,77 @@ button.chip:hover {
   border-color: var(--accent);
 }
 
+.nav-badge.muted {
+  color: var(--muted);
+  background: var(--hover);
+}
+
+.rig-card .nav-badge.muted,
+.hands-off-card .nav-badge.muted {
+  color: #b9b6cc;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.hands-off-card canvas,
+.stage-single.dimmed {
+  opacity: 0.3;
+}
+
+.hands-off {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  width: min(440px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(10, 10, 16, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.hands-off strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hands-off span {
+  color: #a5a2bb;
+}
+
+.hands-off .btn {
+  margin-top: 6px;
+}
+
+.control-chip {
+  cursor: pointer;
+  gap: 10px;
+}
+
+.switch.small {
+  width: 30px;
+  height: 18px;
+}
+
+.switch.small::after {
+  width: 12px;
+  height: 12px;
+}
+
+.switch.small:checked::after {
+  transform: translateX(12px);
+}
+
+body.device-hands-off .shelf,
+body.device-hands-off .inspector > :not(.inspector-foot) {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 /* --- Effects shelf --------------------------------------------------------- */
 
 .shelf {
