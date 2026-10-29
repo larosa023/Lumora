@@ -53,7 +53,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/orgb"
           QT_QPA_PLATFORM=offscreen ./squashfs-root/AppRun --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect --config "$RUNNER_TEMP/orgb" > openrgb.log 2>&1 &
       - name: Lumora's client connects
-        run: cargo run -p lumora-core --example probe
-      - name: OpenRGB log
+        run: |
+          set -o pipefail
+          cargo build -q -p lumora-core --example probe
+          ./target/debug/examples/probe 2>&1 | tee probe.log
+      - name: Report (readable as check annotations)
         if: always()
-        run: cat openrgb.log || true
+        run: |
+          sed 's/^/probe: /' probe.log 2>/dev/null | tail -40 | while IFS= read -r l; do echo "::notice::$l"; done
+          tail -30 openrgb.log 2>/dev/null | sed 's/^/openrgb: /' | while IFS= read -r l; do echo "::notice::$l"; done
+          ls -la squashfs-root/AppRun 2>&1 | sed 's/^/files: /' | while IFS= read -r l; do echo "::notice::$l"; done

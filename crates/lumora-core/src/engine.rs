@@ -282,7 +282,9 @@ fn set_connection(shared: &Shared, status: ConnectionStatus, server: String, mes
     }
 }
 
-type Connected = std::io::Result<(Client, Vec<Controller>)>;
+/// The client, the controllers that answered (with their server index), and
+/// how many didn't.
+type Connected = std::io::Result<(Client, Vec<(u32, Controller)>, usize)>;
 
 /// Connecting and reading devices can take seconds (slow SMBus RAM), so it
 /// happens on a helper thread and the render loop never stalls.
@@ -300,8 +302,22 @@ fn spawn_connect(host: String, port: u16, existing: Option<Client>) -> Receiver<
                 Some(c) => c,
                 None => Client::connect(&host, port, Duration::from_millis(800))?,
             };
-            let controllers = c.controllers()?;
-            Ok((c, controllers))
+            // One misbehaving device (busy, or held by its vendor's app) must not
+            // hide all the others, so a device that doesn't answer is skipped.
+            let count = c.controller_count()?;
+            let mut found = Vec::new();
+            let mut skipped = 0;
+            for i in 0..count {
+                match c.controller(i) {
+                    Ok(ctrl) => found.push((i, ctrl)),
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::InvalidData) => skipped += 1,
+                    Err(e) => return Err(e),
+                }
+            }
+            if count > 0 && found.is_empty() {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "none of the devices answered"));
+            }
+            Ok((c, found, skipped))
         })();
         let _ = tx.send(result);
     });
@@ -309,13 +325,13 @@ fn spawn_connect(host: String, port: u16, existing: Option<Client>) -> Receiver<
 }
 
 /// Swaps freshly read controllers in as the real device list.
-fn install(shared: &Shared, client: &mut Client, controllers: Vec<Controller>) -> std::io::Result<()> {
-    let ids = stable_ids(&controllers);
+fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controller)>, skipped: usize) -> std::io::Result<()> {
+    let plain: Vec<Controller> = controllers.iter().map(|(_, c)| c.clone()).collect();
+    let ids = stable_ids(&plain);
     let runtimes: Vec<Runtime> = controllers
         .iter()
         .zip(ids)
-        .enumerate()
-        .map(|(i, (c, id))| Runtime::new(DeviceInfo::from_controller(c, id), Sink::OpenRgb(i as u32)))
+        .map(|((i, c), id)| Runtime::new(DeviceInfo::from_controller(c, id), Sink::OpenRgb(*i)))
         .collect();
     for r in &runtimes {
         if let (Sink::OpenRgb(i), true) = (&r.sink, r.info.controllable) {
@@ -328,11 +344,14 @@ fn install(shared: &Shared, client: &mut Client, controllers: Vec<Controller>) -
         s.real = runtimes;
         s.refresh_demo();
     }
-    let message = match count {
-        0 => "Connected, but OpenRGB hasn't found any devices yet".to_string(),
+    let mut message = match count {
+        0 => "Connected, but no devices found yet".to_string(),
         1 => "1 device".to_string(),
         n => format!("{n} devices"),
     };
+    if skipped > 0 {
+        message.push_str(&format!(" ({skipped} not responding)"));
+    }
     set_connection(shared, ConnectionStatus::Connected, client.server.clone(), message, client.protocol);
     shared.changed();
     Ok(())
@@ -385,7 +404,7 @@ fn run(shared: Arc<Shared>) {
                 Conn::Pending(spawn_connect(host.clone(), port, None))
             }
             Conn::Pending(rx) => match rx.try_recv() {
-                Ok(Ok((mut c, controllers))) => match install(&shared, &mut c, controllers) {
+                Ok(Ok((mut c, controllers, skipped))) => match install(&shared, &mut c, controllers, skipped) {
                     Ok(()) => {
                         failures = 0;
                         Conn::Ready(c)
@@ -399,7 +418,7 @@ fn run(shared: Arc<Shared>) {
                         std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut | std::io::ErrorKind::NotFound => {
                             "OpenRGB isn't running, or its SDK server is off".to_string()
                         }
-                        _ => format!("Couldn't talk to OpenRGB: {e}"),
+                        _ => format!("Couldn't read your devices: {e}"),
                     };
                     set_connection(&shared, ConnectionStatus::Offline, server.clone(), message, 0);
                     // Back off gently: 2s, 4s … capped at 10s.

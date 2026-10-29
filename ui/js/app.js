@@ -183,8 +183,13 @@ function renderConnection() {
     title = { connected: 'Hardware engine running', connecting: 'Starting hardware engine…', offline: 'Starting hardware engine…' }[c.status];
     const n = devices().filter((d) => !d.virtual_device).length;
     detail = c.status === 'connected'
-      ? (n ? `${n} device${n === 1 ? '' : 's'}` : 'Looking for devices…')
-      : 'This takes a few seconds';
+      ? (n ? c.message : 'Looking for devices…')
+      : 'This can take up to a minute';
+    // A real error beats "starting": show what went wrong.
+    if (c.status === 'offline' && c.message && !/isn't running/.test(c.message)) {
+      title = 'Can\u2019t reach the hardware engine';
+      detail = c.message;
+    }
     if (e.problem) {
       title = 'Hardware engine stopped';
       detail = e.problem;
