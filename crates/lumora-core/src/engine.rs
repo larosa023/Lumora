@@ -495,7 +495,7 @@ fn run(shared: Arc<Shared>) {
 
         // --- Render -------------------------------------------------------------
         let now = Instant::now();
-        let frame = Frame { t: (now - start).as_secs_f32(), dt: (now - last).as_secs_f32().min(0.25) };
+        let frame = Frame { t: (now - start).as_secs_f32(), dt: (now - last).as_secs_f32().min(0.25), temp: None };
         last = now;
 
         let mut outgoing: Vec<(u32, Vec<Rgb>)> = Vec::new();
@@ -535,7 +535,11 @@ fn run(shared: Arc<Shared>) {
                     d.cfg = Some(cfg.clone());
                 }
                 let fx = d.effect.as_mut().expect("effect built above");
-                fx.render(&frame, &d.leds, &mut d.raw);
+                let mut f = frame;
+                if cfg.effect == "temperature" {
+                    f.temp = crate::temps::get(&cfg.temp_source);
+                }
+                fx.render(&f, &d.leds, &mut d.raw);
                 animating |= !fx.is_static();
 
                 let out: Vec<Rgb> = d.raw.iter().map(|c| c.scale(level)).collect();

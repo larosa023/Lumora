@@ -9,6 +9,7 @@
 //! * [`store`] – settings, profiles and the last session, saved as JSON.
 
 pub mod color;
+pub mod cooling;
 pub mod demo;
 pub mod device;
 pub mod effects;
@@ -16,6 +17,7 @@ pub mod engine;
 pub mod mock;
 pub mod openrgb;
 pub mod store;
+pub mod temps;
 
 pub use color::Rgb;
 pub use device::{DeviceInfo, DeviceKind};

@@ -36,6 +36,11 @@ pub struct EffectConfig {
     /// 0..=100: wavelength, tail length, density… depending on the effect.
     pub size: u8,
     pub direction: Direction,
+    /// Temperature effect: which reading to follow ("liquid" or "gpu").
+    pub temp_source: String,
+    /// Temperature effect: °C shown as the first and last color.
+    pub temp_low: u8,
+    pub temp_high: u8,
 }
 
 impl Default for EffectConfig {
@@ -46,6 +51,9 @@ impl Default for EffectConfig {
             speed: 40,
             size: 50,
             direction: Direction::Right,
+            temp_source: "liquid".into(),
+            temp_low: 30,
+            temp_high: 45,
         }
     }
 }
@@ -64,6 +72,8 @@ pub struct EffectDescriptor {
     /// Label for the size slider in this effect's context.
     pub size_label: &'static str,
     pub default_colors: Vec<Rgb>,
+    /// Follows a live temperature (shows the source and range controls).
+    pub uses_temperature: bool,
 }
 
 fn hex(s: &[&str]) -> Vec<Rgb> {
@@ -94,6 +104,7 @@ fn d(
         uses_direction: direction,
         size_label: size.unwrap_or(""),
         default_colors: hex(default_colors),
+        uses_temperature: false,
     }
 }
 
@@ -112,6 +123,20 @@ pub fn catalog() -> Vec<EffectDescriptor> {
         d("marquee", "Marquee", "Theater-style chasing dashes", "Motion", (1, 4), true, Some("Dash size"), true, &["#ffb000", "#ff3d7f"]),
         d("twinkle", "Starfield", "Random sparkles fading in and out", "Motion", (1, 6), true, Some("Density"), false, &["#ffffff", "#9ad7ff", "#c7a6ff"]),
         d("fire", "Fire", "Flickering flames", "Motion", (3, 3), true, Some("Flame height"), true, &["#ff1e00", "#ff8a00", "#ffe066"]),
+        EffectDescriptor {
+            uses_temperature: true,
+            ..d(
+                "temperature",
+                "Temperature",
+                "Colors follow your liquid or GPU temperature",
+                "Live",
+                (2, 6),
+                false,
+                None,
+                false,
+                &["#00a2ff", "#00ffa3", "#ffd400", "#ff2d2d"],
+            )
+        },
     ]
 }
 
@@ -126,6 +151,8 @@ pub struct Frame {
     pub t: f32,
     /// Seconds since the previous frame.
     pub dt: f32,
+    /// Live temperature for effects that follow one (°C), if available.
+    pub temp: Option<f32>,
 }
 
 pub trait Effect: Send {
@@ -175,6 +202,7 @@ pub fn build(cfg: &EffectConfig, led_count: usize) -> Box<dyn Effect> {
     if cfg.colors.is_empty() {
         cfg.colors.push(Rgb::WHITE);
     }
+    let cfg_temps = (cfg.temp_low, cfg.temp_high);
     let speed = speed_factor(cfg.speed);
     let size = size_factor(cfg.size);
     let dir = cfg.direction;
@@ -191,6 +219,7 @@ pub fn build(cfg: &EffectConfig, led_count: usize) -> Box<dyn Effect> {
         "marquee" => Box::new(Marquee { colors, speed, size, dir }),
         "twinkle" => Box::new(Twinkle::new(colors, speed, size, led_count)),
         "fire" => Box::new(Fire { colors, speed, size, dir }),
+        "temperature" => Box::new(Temperature::new(colors, cfg_temps.0, cfg_temps.1)),
         _ => Box::new(Static { color: colors[0] }),
     }
 }
@@ -449,6 +478,53 @@ impl Effect for Fire {
     }
 }
 
+/// Colors follow a live temperature: the first color at `low`, the last at
+/// `high`. Readings change once a second, so the shown value eases toward
+/// them. Past `high` the lights pulse; with no reading they glow dimly.
+struct Temperature {
+    colors: Vec<Rgb>,
+    low: f32,
+    high: f32,
+    shown: Option<f32>,
+}
+
+impl Temperature {
+    fn new(colors: Vec<Rgb>, low: u8, high: u8) -> Self {
+        let (low, high) = (low.min(high) as f32, low.max(high) as f32);
+        Temperature { colors, low, high: if high > low { high } else { low + 1.0 }, shown: None }
+    }
+
+    /// 0..=1 position of `temp` in the range.
+    pub fn level(&self, temp: f32) -> f32 {
+        ((temp - self.low) / (self.high - self.low)).clamp(0.0, 1.0)
+    }
+}
+
+impl Effect for Temperature {
+    fn render(&mut self, f: &Frame, leds: &[LedPos], out: &mut [Rgb]) {
+        let Some(target) = f.temp else {
+            self.shown = None;
+            let glow = 0.18 + 0.07 * (f.t * 1.2).sin();
+            out.fill(self.colors[0].scale(glow));
+            return;
+        };
+        let shown = match self.shown {
+            Some(s) => s + (target - s) * (f.dt * 1.5).min(1.0),
+            None => target,
+        };
+        self.shown = Some(shown);
+        let level = self.level(shown);
+        let base = sample(&self.colors, level, false);
+        let hot = shown >= self.high;
+        let pulse = if hot { 0.65 + 0.35 * (0.5 + 0.5 * (f.t * std::f32::consts::TAU * 0.8).cos()) } else { 1.0 };
+        for (o, p) in out.iter_mut().zip(leds) {
+            // A slow shimmer so it reads as live, not frozen.
+            let shimmer = 0.86 + 0.14 * noise(p.x * 3.0 + f.t * 0.4, p.y * 2.0 + 11.0);
+            *o = base.scale(shimmer * pulse);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,7 +541,7 @@ mod tests {
             let mut fx = build(&cfg, leds.len());
             let mut out = vec![Rgb::BLACK; leds.len()];
             for k in 0..60 {
-                fx.render(&Frame { t: k as f32 / 30.0, dt: 1.0 / 30.0 }, &leds, &mut out);
+                fx.render(&Frame { t: k as f32 / 30.0, dt: 1.0 / 30.0, temp: Some(30.0 + k as f32) }, &leds, &mut out);
             }
             assert_eq!(out.len(), 30, "{}", e.id);
         }
@@ -475,7 +551,7 @@ mod tests {
     fn static_is_static() {
         let mut fx = build(&EffectConfig { effect: "static".into(), colors: vec![Rgb::new(1, 2, 3)], ..Default::default() }, 3);
         let mut out = vec![Rgb::BLACK; 3];
-        fx.render(&Frame { t: 0.0, dt: 0.0 }, &strip(3), &mut out);
+        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &strip(3), &mut out);
         assert!(fx.is_static());
         assert_eq!(out, vec![Rgb::new(1, 2, 3); 3]);
     }
@@ -485,7 +561,7 @@ mod tests {
         // Fire needs three colors; give it none and it should still render.
         let mut fx = build(&EffectConfig { effect: "fire".into(), colors: vec![], ..Default::default() }, 10);
         let mut out = vec![Rgb::BLACK; 10];
-        fx.render(&Frame { t: 1.0, dt: 0.03 }, &strip(10), &mut out);
+        fx.render(&Frame { t: 1.0, dt: 0.03, temp: None }, &strip(10), &mut out);
     }
 
     #[test]
@@ -493,9 +569,32 @@ mod tests {
         let leds = strip(10);
         let mut fx = build(&EffectConfig { effect: "rainbow_wave".into(), ..Default::default() }, 10);
         let (mut a, mut b) = (vec![Rgb::BLACK; 10], vec![Rgb::BLACK; 10]);
-        fx.render(&Frame { t: 0.0, dt: 0.0 }, &leds, &mut a);
-        fx.render(&Frame { t: 0.5, dt: 0.5 }, &leds, &mut b);
+        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &leds, &mut a);
+        fx.render(&Frame { t: 0.5, dt: 0.5, temp: None }, &leds, &mut b);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn temperature_maps_range_to_colors() {
+        let leds = strip(4);
+        let cfg = EffectConfig {
+            effect: "temperature".into(),
+            colors: vec![Rgb::new(0, 0, 255), Rgb::new(255, 0, 0)],
+            temp_low: 30,
+            temp_high: 40,
+            ..Default::default()
+        };
+        let mut fx = build(&cfg, 4);
+        let mut out = vec![Rgb::BLACK; 4];
+        fx.render(&Frame { t: 0.0, dt: 0.0, temp: Some(30.0) }, &leds, &mut out);
+        assert!(out.iter().all(|c| c.b > 150 && c.r < 20), "cool end is the first color: {out:?}");
+        let mut fx = build(&cfg, 4);
+        fx.render(&Frame { t: 0.0, dt: 0.0, temp: Some(39.9) }, &leds, &mut out);
+        assert!(out.iter().all(|c| c.r > 150 && c.b < 30), "hot end is the last color: {out:?}");
+        // No reading: a dim glow, not darkness and not full brightness.
+        let mut fx = build(&cfg, 4);
+        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &leds, &mut out);
+        assert!(out.iter().all(|c| c.b > 10 && c.b < 90));
     }
 
     #[test]

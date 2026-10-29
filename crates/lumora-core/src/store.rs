@@ -44,6 +44,8 @@ pub struct Settings {
     /// Per-device choice of whether Lumora drives the lights, by device id.
     /// Devices not listed use [`default_control`].
     pub device_control: BTreeMap<String, bool>,
+    /// Cooling choices per cooler (takeover, curves, screen).
+    pub coolers: BTreeMap<String, crate::cooling::CoolerConfig>,
 }
 
 impl Default for Settings {
@@ -61,6 +63,7 @@ impl Default for Settings {
             check_for_updates: true,
             builtin_engine: true,
             device_control: BTreeMap::new(),
+            coolers: BTreeMap::new(),
         }
     }
 }
@@ -135,6 +138,7 @@ fn preset(name: &str, effect: &str, colors: &[&str], speed: u8, size: u8, direct
             speed,
             size,
             direction,
+            ..EffectConfig::default()
         },
         overrides: BTreeMap::new(),
         brightness: 100,

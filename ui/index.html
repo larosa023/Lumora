@@ -107,6 +107,19 @@
         <div class="segmented" id="direction" role="radiogroup" aria-label="Direction"></div>
       </div>
 
+      <div class="control" id="tempControl" hidden>
+        <div class="control-label"><span>Follows</span></div>
+        <div class="segmented" id="tempSource" role="radiogroup" aria-label="Temperature source">
+          <button type="button" data-v="liquid" role="radio">Liquid</button>
+          <button type="button" data-v="gpu" role="radio">GPU</button>
+        </div>
+        <p class="hint" id="tempNow"></p>
+        <label class="control-label" for="tempLow" style="margin-top:14px"><span>First color at</span><output id="tempLowOut"></output></label>
+        <input type="range" id="tempLow" min="20" max="95">
+        <label class="control-label" for="tempHigh" style="margin-top:12px"><span>Last color at</span><output id="tempHighOut"></output></label>
+        <input type="range" id="tempHigh" min="20" max="95">
+      </div>
+
       <div class="inspector-foot">
         <div class="control">
           <label class="control-label" for="brightness"><span>Brightness</span><output id="brightnessOut"></output></label>
@@ -253,6 +266,20 @@
       <footer class="update-actions">
         <button type="button" class="btn" id="controlCancel">Not now</button>
         <button type="button" class="btn primary" id="controlGo">Control with Lumora</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog class="sheet update-sheet" id="coolerDialog" aria-labelledby="coolerDialogTitle">
+    <div class="sheet-inner">
+      <header class="sheet-head"><h2 id="coolerDialogTitle">Let Lumora run this cooler?</h2></header>
+      <section class="sheet-section">
+        <p class="sheet-note" id="coolerDialogText"></p>
+        <p class="sheet-note" id="coolerDialogKeep"></p>
+      </section>
+      <footer class="update-actions">
+        <button type="button" class="btn" id="coolerDialogCancel">Not now</button>
+        <button type="button" class="btn primary" id="coolerDialogGo">Let Lumora run it</button>
       </footer>
     </div>
   </dialog>

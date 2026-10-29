@@ -20,6 +20,13 @@ Signed driver installer, run only if you turn on RAM & motherboard lighting.
 
 - Project, license and source code: https://pawnio.eu and https://github.com/namazso/PawnIO.Setup
 
+## Cooler protocol research
+
+Lumora's cooler drivers are its own code (MIT). The USB message layouts they use were learned from these open projects, whose authors documented the devices; no code was copied from them:
+
+- liquidctl (GPL-3.0): https://github.com/liquidctl/liquidctl
+- Linux `nzxt-kraken3` hwmon driver (GPL-2.0): https://github.com/torvalds/linux/blob/master/drivers/hwmon/nzxt-kraken3.c
+
 ## Sora typeface
 
 - License: SIL Open Font License 1.1 (`ui/fonts/OFL.txt`)

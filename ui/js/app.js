@@ -3,6 +3,7 @@ import { build, hexToRgb } from './effects.js';
 import { DeviceView } from './render.js';
 import { openPicker, closePicker } from './picker.js';
 import { icon } from './icons.js';
+import * as cooling from './cooling.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -37,7 +38,7 @@ const THEMES = [
 const ACCENTS = ['#7c5cff', '#3d6bff', '#00b3ff', '#00c9a7', '#3ddc97', '#ffb000', '#ff5a1f', '#ff3d7f'];
 
 // Effects that look wrong in arbitrary colors start from their own palette.
-const SIGNATURE_PALETTES = new Set(['fire']);
+const SIGNATURE_PALETTES = new Set(['fire', 'temperature']);
 
 const DIRECTIONS = [['left', 'Left'], ['right', 'Right'], ['up', 'Up'], ['down', 'Down'], ['out', 'Outward'], ['in', 'Inward']];
 
@@ -170,7 +171,7 @@ function renderSidebar() {
       </button>`;
     }).join('');
   }).join('');
-  $('#deviceList').innerHTML = html;
+  $('#deviceList').innerHTML = html + cooling.sidebarHtml();
   paintGlows();
 }
 
@@ -196,6 +197,7 @@ document.addEventListener('click', (e) => {
 
 function select(id) {
   state.selected = id;
+  document.body.classList.toggle('cooler-view', !!cooling.coolerId(id));
   document.body.classList.toggle('device-hands-off', !!selectedDevice() && !selectedDevice().managed);
   closePicker();
   renderSidebar();
@@ -344,6 +346,8 @@ function makeView(canvas, device, opts) {
 }
 
 function renderStageHead() {
+  const cooler = cooling.selectedCooler();
+  if (cooler) return cooling.renderHead(cooler);
   const d = selectedDevice();
   const actions = $('#stageActions');
   if (!d) {
@@ -411,6 +415,9 @@ function renderStage() {
   state.views.clear();
   const body = $('#stageBody');
   renderStageHead();
+  const cooler = cooling.selectedCooler();
+  document.body.classList.toggle('cooler-view', !!cooler);
+  if (cooler) return cooling.renderPage(cooler);
   const d = selectedDevice();
   if (d) {
     const sizable = d.zones.map((z, i) => ({ ...z, index: i })).filter((z) => z.resizable);
@@ -480,7 +487,7 @@ function renderEffects() {
   state.tiles = [...grid.children].map((tile) => {
     const e = effectById(tile.dataset.effect);
     tile.setAttribute('aria-checked', String(e.id === cfg.effect));
-    const keep = cfg.colors.length ? cfg.colors : e.default_colors;
+    const keep = cfg.colors.length && !(SIGNATURE_PALETTES.has(e.id) && cfg.effect !== e.id) ? cfg.colors : e.default_colors;
     const tcfg = { ...cfg, effect: e.id, colors: colorsFor(e, keep), speed: Math.max(cfg.speed, 30), size: 50 };
     return { canvas: tile.querySelector('canvas'), render: build(tcfg, e, TILE_LEDS.length), out: new Array(TILE_LEDS.length).fill([0, 0, 0]) };
   });
@@ -492,7 +499,8 @@ function animateTiles(now) {
   tileLast = now;
   if (!document.hidden) {
     for (const tile of state.tiles) {
-      tile.render(t, dt, TILE_LEDS, tile.out);
+      // Tiles sweep through a fake temperature so the effect reads at a glance.
+      tile.render(t, dt, TILE_LEDS, tile.out, 32 + 14 * (0.5 + 0.5 * Math.sin(t * 0.7)));
       const ctx = tile.canvas.getContext('2d');
       const w = tile.canvas.width, h = tile.canvas.height, step = w / TILE_LEDS.length;
       ctx.clearRect(0, 0, w, h);
@@ -507,9 +515,25 @@ function animateTiles(now) {
 
 // --- Inspector --------------------------------------------------------------
 
-function setRange(el, value) {
+function setRange(el, value, min = 0, max = 100) {
   el.value = value;
-  el.style.setProperty('--p', `${value}%`);
+  el.style.setProperty('--p', `${((value - min) / (max - min)) * 100}%`);
+}
+
+function tempReading(source) {
+  return (state.app.temps || []).find((t) => t.source === source)?.celsius;
+}
+
+function renderTempNow() {
+  const el = $('#tempNow');
+  if (!el || $('#tempControl').hidden) return;
+  const source = currentConfig().temp_source || 'liquid';
+  const v = tempReading(source);
+  el.textContent = v != null
+    ? `Now ${v.toFixed(1)} °C`
+    : source === 'liquid'
+      ? 'No liquid reading yet. Let Lumora run your cooler (in the Cooling section) to use it.'
+      : 'No GPU reading. This works with NVIDIA graphics cards.';
 }
 
 function renderInspector() {
@@ -576,6 +600,15 @@ function renderInspector() {
   $('#sizeOut').textContent = cfg.size;
 
   $('#directionControl').hidden = !e.uses_direction;
+  $('#tempControl').hidden = !e.uses_temperature;
+  if (e.uses_temperature) {
+    setRadio($('#tempSource'), cfg.temp_source || 'liquid');
+    setRange($('#tempLow'), cfg.temp_low ?? 30, 20, 95);
+    setRange($('#tempHigh'), cfg.temp_high ?? 45, 20, 95);
+    $('#tempLowOut').textContent = `${cfg.temp_low ?? 30} °C`;
+    $('#tempHighOut').textContent = `${cfg.temp_high ?? 45} °C`;
+    renderTempNow();
+  }
   const dirs = e.id === 'ripple' ? DIRECTIONS.filter(([d]) => d === 'in' || d === 'out') : DIRECTIONS;
   const dirEl = $('#direction');
   const active = e.id === 'ripple' && cfg.direction !== 'in' ? 'out' : cfg.direction;
@@ -609,6 +642,23 @@ for (const key of ['speed', 'size']) {
     applyConfigQuiet({ ...currentConfig(), [key]: v });
   });
   $('#' + key).addEventListener('change', () => renderEffects());
+}
+
+$('#tempSource').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-v]');
+  if (!b) return;
+  // Sensible ranges per source: liquid runs cool, GPUs run hot.
+  const range = b.dataset.v === 'gpu' ? [40, 80] : [30, 45];
+  applyConfig({ ...currentConfig(), temp_source: b.dataset.v, temp_low: range[0], temp_high: range[1] });
+});
+
+for (const [id, key] of [['#tempLow', 'temp_low'], ['#tempHigh', 'temp_high']]) {
+  $(id).addEventListener('input', (ev) => {
+    const v = +ev.target.value;
+    setRange(ev.target, v, 20, 95);
+    $(id + 'Out').textContent = `${v} °C`;
+    applyConfigQuiet({ ...currentConfig(), [key]: v });
+  });
 }
 
 $('#direction').addEventListener('click', (ev) => {
@@ -1099,6 +1149,7 @@ function onFrames(frames) {
 async function init() {
   if (!api.inApp) document.body.classList.add('browser');
   state.app = await api.invoke('get_state');
+  cooling.initCooling({ api, state, toast, esc, icon, rerender: () => { renderSidebar(); renderStage(); } });
   applyTheme();
   renderAll();
   renderProfileName();
@@ -1111,6 +1162,31 @@ async function init() {
     renderConnection();
     renderHardware();
     renderStageHead();
+  });
+  await api.listen('lumora://coolers', (e) => {
+    const prev = state.app.coolers || [];
+    const shape = (list) => list.map((c) => `${c.id}|${c.state}|${c.takeover}|${c.owner_running}|${c.message}|${c.firmware}`).join(',');
+    if (cooling.isBusy()) {
+      // Keep local edits; only take the live readings.
+      for (const c of e.payload) {
+        const mine = prev.find((p) => p.id === c.id);
+        if (mine) mine.status = c.status;
+      }
+    } else {
+      state.app.coolers = e.payload;
+    }
+    if (shape(prev) !== shape(state.app.coolers) || prev.length !== e.payload.length) {
+      renderSidebar();
+      if (cooling.selectedCooler() || cooling.coolerId(state.selected)) renderStage();
+    } else {
+      cooling.refreshSidebarTemps();
+      const c = cooling.selectedCooler();
+      if (c) cooling.refreshLive(c);
+    }
+  });
+  await api.listen('lumora://temps', (e) => {
+    state.app.temps = e.payload;
+    renderTempNow();
   });
   await api.listen('lumora://update-progress', (e) => onUpdateProgress(e.payload));
   await api.listen('lumora://update-available', (e) => {

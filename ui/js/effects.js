@@ -196,6 +196,27 @@ export function build(cfg, desc, ledCount) {
         });
       };
     }
+    case 'temperature': {
+      const low = Math.min(cfg.temp_low ?? 30, cfg.temp_high ?? 45);
+      let high = Math.max(cfg.temp_low ?? 30, cfg.temp_high ?? 45);
+      if (high <= low) high = low + 1;
+      let shown = null;
+      // `temp` is the live reading in °C, or null when there isn't one.
+      return (t, dt, leds, out, temp) => {
+        if (temp == null) {
+          shown = null;
+          out.fill(scale(colors[0], 0.18 + 0.07 * Math.sin(t * 1.2)));
+          return;
+        }
+        shown = shown == null ? temp : shown + (temp - shown) * Math.min(dt * 1.5, 1);
+        const base = sample(colors, clamp01((shown - low) / (high - low)), false);
+        const pulse = shown >= high ? 0.65 + 0.35 * (0.5 + 0.5 * Math.cos(t * Math.PI * 2 * 0.8)) : 1;
+        leds.forEach((p, i) => {
+          const shimmer = 0.86 + 0.14 * noise(p.x * 3 + t * 0.4, p.y * 2 + 11);
+          out[i] = scale(base, shimmer * pulse);
+        });
+      };
+    }
     default:
       return (t, dt, leds, out) => out.fill(colors[0]);
   }

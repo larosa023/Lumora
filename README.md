@@ -12,7 +12,8 @@ Lumora replaces the pile of vendor apps (iCUE, Armoury Crate, Mystic Light, Syna
 
 - **Nothing else to install.** On Windows, Lumora carries its own hardware engine (built on [OpenRGB](https://openrgb.org), bundled and run invisibly), which supports hundreds of RAM, motherboard, GPU, cooler, fan, LED strip, keyboard, mouse and headset controllers.
 - **RAM & motherboard in one click.** Windows only opens those to admin programs, so Lumora asks for permission once, installs the small signed PawnIO driver, and never asks again.
-- **12 effects:** Static, Gradient, Breathing, Spectrum, Aurora, Rainbow, Color Wave, Ripple, Comet, Marquee, Starfield and Fire, each with speed, size and direction controls.
+- **Cooler control (NZXT Kraken Z, Kraken 2023, Kraken Elite 2023 and Kraken 2024):** live liquid temperature, pump and fan speeds, Silent/Balanced/Performance presets, fixed speeds or your own curve, and the screen's brightness and rotation. NZXT CAM stays in charge until you switch on "Run by Lumora" for that cooler. Curves are stored on the cooler, so it keeps following them with Lumora closed.
+- **13 effects:** Static, Gradient, Breathing, Spectrum, Aurora, Rainbow, Color Wave, Ripple, Comet, Marquee, Starfield, Fire and Temperature (colors follow your liquid or NVIDIA GPU temperature), each with its own controls.
 - **Colors your way:** a full color picker, hex entry, curated swatches, recent colors, screen eyedropper (Windows), up to six colors per effect and one-click palettes.
 - **Sync or customize:** one effect across your whole rig, or an override for any device.
 - **Profiles:** save a lighting setup and switch back to it in one click. Five starter profiles are included.

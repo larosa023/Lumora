@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use engine_host::{EngineHost, EngineStatus};
+use lumora_core::cooling::{CoolerConfig, CoolerView, CoolingManager};
 use lumora_core::effects::catalog;
 use lumora_core::engine::EngineEvent;
 use lumora_core::store::Store;
@@ -61,12 +62,14 @@ struct AppState {
     launch_at_login: bool,
     version: &'static str,
     engine: EngineStatus,
+    coolers: Vec<CoolerView>,
+    temps: Vec<lumora_core::temps::TempReading>,
 }
 
 type CmdResult<T> = Result<T, String>;
 
 #[tauri::command]
-fn get_state(app: State<App>, host: State<Arc<EngineHost>>, handle: AppHandle) -> AppState {
+fn get_state(app: State<App>, host: State<Arc<EngineHost>>, cooling: State<CoolingManager>, handle: AppHandle) -> AppState {
     AppState {
         snapshot: app.engine.snapshot(),
         effects: catalog(),
@@ -76,7 +79,20 @@ fn get_state(app: State<App>, host: State<Arc<EngineHost>>, handle: AppHandle) -
         launch_at_login: handle.autolaunch().is_enabled().unwrap_or(false),
         version: env!("CARGO_PKG_VERSION"),
         engine: host.status(),
+        coolers: cooling.views(),
+        temps: lumora_core::temps::all(),
     }
+}
+
+/// Saves and applies one cooler's settings (takeover, curves, screen).
+#[tauri::command]
+fn set_cooler_config(app: State<App>, cooling: State<CoolingManager>, id: String, config: CoolerConfig) -> CmdResult<Vec<CoolerView>> {
+    let mut settings = app.settings.lock().unwrap().clone();
+    settings.coolers.insert(id.clone(), config.clone());
+    app.store.save_settings(&settings).map_err(|e| e.to_string())?;
+    *app.settings.lock().unwrap() = settings;
+    cooling.set_config(&id, config);
+    Ok(cooling.views())
 }
 
 pub fn run_elevated_helper() -> Option<i32> {
@@ -250,7 +266,7 @@ fn lighting_services() -> String {
 
 /// A plain-text report for troubleshooting a PC, to copy and paste.
 #[tauri::command]
-async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>) -> CmdResult<String> {
+async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>, cooling: State<'_, CoolingManager>) -> CmdResult<String> {
     use std::fmt::Write as _;
     let snap = app.engine.snapshot();
     let status = host.status();
@@ -286,6 +302,20 @@ async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>
     let off: Vec<_> = settings.device_control.iter().filter(|(_, on)| !**on).map(|(id, _)| id.as_str()).collect();
     if !off.is_empty() {
         let _ = writeln!(r, "Switched off: {}", off.join(", "));
+    }
+    {
+        let cooling = cooling.views();
+        let _ = writeln!(r, "\n--- Coolers ---");
+        if cooling.is_empty() {
+            let _ = writeln!(r, "(none found)");
+        }
+        for c in cooling {
+            let _ = writeln!(
+                r,
+                "{} {} | {} | takeover {} | {:?} {} | {:?}",
+                c.vendor, c.name, c.id, c.takeover, c.state, c.message, c.status
+            );
+        }
     }
     let services = tauri::async_runtime::spawn_blocking(lighting_services).await.unwrap_or_default();
     let _ = writeln!(r, "\n--- Other RGB software ---\n{}", if services.is_empty() { "(none found)" } else { &services });
@@ -543,6 +573,28 @@ pub fn run() {
             host.apply(settings.builtin_engine, &settings.host);
             app.manage(host);
 
+            let cooler_events = handle.clone();
+            let backend: Box<dyn lumora_core::cooling::Backend> = if std::env::var_os("LUMORA_FAKE_COOLER").is_some() {
+                Box::new(lumora_core::cooling::fake::FakeBackend::with_kraken(0x300C).0)
+            } else {
+                Box::new(lumora_core::cooling::hid::HidBackend::new())
+            };
+            let cooling = CoolingManager::new(
+                backend,
+                settings.coolers.clone(),
+                Box::new(lumora_core::cooling::hid::running_processes),
+                Arc::new(move |views| {
+                    let _ = cooler_events.emit("lumora://coolers", views);
+                }),
+            );
+            app.manage(cooling);
+            lumora_core::temps::gpu::start_polling();
+            let temp_events = handle.clone();
+            std::thread::spawn(move || loop {
+                let _ = temp_events.emit("lumora://temps", lumora_core::temps::all());
+                std::thread::sleep(Duration::from_secs(2));
+            });
+
             let start_hidden = settings.start_minimized || std::env::args().any(|a| a == "--minimized");
             let engine = Engine::new(settings.clone(), session, listener);
             app.manage(App {
@@ -604,6 +656,7 @@ pub fn run() {
             rescan,
             resize_zone,
             set_device_control,
+            set_cooler_config,
             diagnostic_report,
             set_launch_at_login,
             open_external,

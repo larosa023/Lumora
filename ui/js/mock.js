@@ -2,6 +2,7 @@
 // browser. Inside the app, bridge.js talks to the real Rust engine instead.
 
 import { build, ledPositions } from './effects.js';
+import { localTable } from './cooling.js';
 
 const fx = (id, name, description, category, [min, max], speed, size, direction, colors) => ({
   id, name, description, category, min_colors: min, max_colors: max,
@@ -21,7 +22,30 @@ const EFFECTS = [
   fx('marquee', 'Marquee', 'Theater-style chasing dashes', 'Motion', [1, 4], true, 'Dash size', true, ['#ffb000', '#ff3d7f']),
   fx('twinkle', 'Starfield', 'Random sparkles fading in and out', 'Motion', [1, 6], true, 'Density', false, ['#ffffff', '#9ad7ff', '#c7a6ff']),
   fx('fire', 'Fire', 'Flickering flames', 'Motion', [3, 3], true, 'Flame height', true, ['#ff1e00', '#ff8a00', '#ffe066']),
+  { ...fx('temperature', 'Temperature', 'Colors follow your liquid or GPU temperature', 'Live', [2, 6], false, null, false, ['#00a2ff', '#00ffa3', '#ffd400', '#ff2d2d']), uses_temperature: true },
 ];
+
+// --- A pretend Kraken for the cooling page ------------------------------------------
+const PRESET_POINTS = {
+  pump: { silent: [[20, 50], [35, 60], [45, 80], [50, 100]], balanced: [[20, 60], [35, 70], [45, 90], [50, 100]], performance: [[20, 80], [30, 90], [40, 100]] },
+  fan: { silent: [[20, 25], [30, 30], [36, 45], [42, 70], [48, 100]], balanced: [[20, 30], [30, 40], [36, 60], [42, 85], [48, 100]], performance: [[20, 50], [30, 65], [36, 85], [40, 100]] },
+};
+function tableFor(ch, setting) {
+  const pts = setting.mode === 'preset' ? PRESET_POINTS[ch][setting.preset]
+    : setting.mode === 'fixed' ? [[20, setting.duty], [58, setting.duty]] : setting.points;
+  return localTable(pts, ch === 'pump' ? 20 : 0);
+}
+const kraken = {
+  id: 'hid:1e71:300c:DEMO', name: 'Kraken Elite (2023)', vendor: 'NZXT', owner_app: 'NZXT CAM', owner_running: false,
+  takeover: location.search.includes('cooler'), state: 'idle', message: '', firmware: '2.4.0', status: null,
+  channels: [
+    { id: 'pump', name: 'Pump', min_duty: 20, setting: { mode: 'preset', preset: 'balanced' } },
+    { id: 'fan', name: 'Radiator fans', min_duty: 0, setting: { mode: 'preset', preset: 'balanced' } },
+  ],
+  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0 } },
+};
+kraken.channels.forEach((c) => (c.table = tableFor(c.id, c.setting)));
+let liquid = 33.2;
 
 function linear(zones) {
   let start = 0;
@@ -81,6 +105,8 @@ const state = {
     preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
   ],
   active_profile: null,
+  coolers: [kraken],
+  temps: [],
   launch_at_login: false,
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
   version: '0.1.0-preview',
@@ -114,7 +140,7 @@ setInterval(() => {
       r.render = build(cfg, EFFECTS.find((e) => e.id === cfg.effect), r.dev.led_count);
       r.out = new Array(r.dev.led_count).fill([0, 0, 0]);
     }
-    r.render(t, dt, r.leds, r.out);
+    r.render(t, dt, r.leds, r.out, mockTemp(cfg.temp_source || 'liquid'));
     if (!preview) continue;
     let bin = '';
     for (const c of r.out) bin += String.fromCharCode(...c.map((v) => Math.round(v * level)));
@@ -122,6 +148,30 @@ setInterval(() => {
   }
   if (preview) emit('lumora://frames', frames);
 }, 1000 / 30);
+
+function mockTemp(source) {
+  return state.temps.find((x) => x.source === source)?.celsius ?? null;
+}
+
+setInterval(() => {
+  liquid += (Math.random() - 0.45) * 0.4;
+  liquid = Math.max(29, Math.min(44, liquid));
+  const k = state.coolers[0];
+  k.state = k.takeover ? 'active' : 'idle';
+  if (k.takeover) {
+    const at = (ch) => ch.table[Math.max(0, Math.min(39, Math.round(liquid) - 20))];
+    const [pump, fan] = k.channels;
+    k.status = { liquid_c: Math.round(liquid * 10) / 10, pump_duty: at(pump), pump_rpm: 1000 + at(pump) * 18, fan_duty: at(fan), fan_rpm: at(fan) * 18, fault: false };
+  } else {
+    k.status = null;
+  }
+  state.temps = [
+    ...(k.takeover ? [{ source: 'liquid', celsius: k.status.liquid_c }] : []),
+    { source: 'gpu', celsius: 54 + Math.round(Math.sin(performance.now() / 9000) * 80) / 10 },
+  ];
+  emit('lumora://coolers', structuredClone(state.coolers));
+  emit('lumora://temps', structuredClone(state.temps));
+}, 1000);
 
 const commands = {
   get_state: () => clone({ ...state, snapshot: state.snapshot }),
@@ -137,6 +187,16 @@ const commands = {
   set_enabled: ({ on }) => { state.snapshot.enabled = on; changed(); },
   set_preview: ({ on }) => { preview = on; },
   rescan: () => {},
+  set_cooler_config: ({ id, config }) => {
+    const k = state.coolers.find((c) => c.id === id);
+    k.takeover = config.takeover;
+    for (const ch of k.channels) {
+      if (config.speeds[ch.id]) ch.setting = config.speeds[ch.id];
+      ch.table = tableFor(ch.id, ch.setting);
+    }
+    if (config.screen) k.screen.settings = config.screen;
+    return structuredClone(state.coolers);
+  },
   diagnostic_report: () => 'Lumora preview\n(no hardware in the browser preview)',
   set_device_control: ({ device, on }) => {
     state.settings.device_control = { ...(state.settings.device_control || {}), [device]: on };
