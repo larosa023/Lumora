@@ -144,6 +144,15 @@ impl EngineHost {
         })
     }
 
+    /// Where the running engine writes its logs.
+    pub fn log_dir(&self) -> PathBuf {
+        if self.status().mode == EngineMode::Full {
+            installed_config_dir().join("logs")
+        } else {
+            self.config_dir.join("logs")
+        }
+    }
+
     pub fn status(&self) -> EngineStatus {
         self.status.lock().unwrap().clone()
     }

@@ -241,7 +241,9 @@ function renderConnection() {
   }
   $('#connTitle').textContent = title;
   $('#connDetail').textContent = detail;
-  $('#connAction').hidden = c.status === 'connected' || builtin();
+  const stuck = c.status === 'connected' && /not responding/.test(c.message);
+  $('#connAction').hidden = !stuck && (c.status === 'connected' || builtin());
+  $('#connAction').textContent = stuck ? 'Details' : 'Set up';
   const s = $('#settingsStatus');
   if (s) {
     s.textContent = c.status === 'connected'
@@ -250,7 +252,7 @@ function renderConnection() {
   }
 }
 
-$('#connAction').addEventListener('click', () => openSettings('#host'));
+$('#connAction').addEventListener('click', () => openSettings(builtin() ? '#reportBtn' : '#host'));
 
 // --- RAM & motherboard (full hardware access) -------------------------------------
 
@@ -871,6 +873,36 @@ $('#port').addEventListener('change', (ev) => {
   else ev.target.value = state.app.settings.port;
 });
 $('#reconnectBtn').addEventListener('click', () => api.invoke('reconnect'));
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const t = document.createElement('textarea');
+    t.value = text;
+    t.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(t);
+    t.select();
+    const ok = document.execCommand('copy');
+    t.remove();
+    return ok;
+  }
+}
+
+$('#reportBtn').addEventListener('click', async () => {
+  const btn = $('#reportBtn');
+  btn.disabled = true;
+  btn.textContent = 'Gathering…';
+  try {
+    const report = await api.invoke('diagnostic_report');
+    toast((await copyText(report)) ? 'Report copied. Paste it into a message.' : 'Couldn\u2019t reach the clipboard');
+  } catch (err) {
+    toast(String(err));
+  }
+  btn.disabled = false;
+  btn.textContent = 'Copy diagnostic report';
+});
+
 $('#rescanBtn').addEventListener('click', () => {
   api.invoke('rescan');
   toast('Looking for devices again. This takes a few seconds.');

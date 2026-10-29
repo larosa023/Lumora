@@ -207,6 +207,109 @@ fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Sett
     Ok(settings)
 }
 
+/// Lines worth keeping from the engine log: what it found, what failed.
+fn interesting_log_lines(text: &str) -> Vec<String> {
+    const KEEP: &[&str] = &[
+        "OpenRGB v", "Registering", "PawnIO", "[Error", "HID device connected", "not respond",
+        "Detected occupied slot", "Detection completed", "Setting config", "failed", "Failed",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    let mut repeats = std::collections::HashMap::<String, usize>::new();
+    for line in text.lines() {
+        if !KEEP.iter().any(|k| line.contains(k)) {
+            continue;
+        }
+        // Collapse the same message repeating (a device timing out every second).
+        let key: String = line.splitn(2, ']').nth(1).unwrap_or(line).chars().filter(|c| !c.is_ascii_digit()).collect();
+        let n = repeats.entry(key).or_insert(0);
+        *n += 1;
+        if *n <= 2 {
+            out.push(line.trim_end().to_string());
+        }
+    }
+    let skip = out.len().saturating_sub(250);
+    out.split_off(skip)
+}
+
+#[cfg(windows)]
+fn lighting_services() -> String {
+    use std::os::windows::process::CommandExt;
+    let script = "Get-Service | Where-Object { $_.Name -match 'Lighting|Aura|Armoury|asComSvc|ROG|NZXT|CAM|iCUE|Corsair|MSI|Mystic|RGBFusion|Gigabyte|Razer|Synapse|LGHUB|SignalRGB|NGENUITY' } | ForEach-Object { \"$($_.Name) ($($_.DisplayName)): $($_.Status)\" }; Get-Process | Where-Object { $_.ProcessName -match 'ArmouryCrate|LightingService|NZXT CAM|iCUE|SignalRgb|MysticLight|RGBFusion|Synapse|lghub|NGENUITY|OpenRGB' } | ForEach-Object { \"process: $($_.ProcessName)\" } | Sort-Object -Unique";
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(0x0800_0000)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn lighting_services() -> String {
+    String::new()
+}
+
+/// A plain-text report for troubleshooting a PC, to copy and paste.
+#[tauri::command]
+async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>) -> CmdResult<String> {
+    use std::fmt::Write as _;
+    let snap = app.engine.snapshot();
+    let status = host.status();
+    let settings = app.settings.lock().unwrap().clone();
+    let mut r = String::new();
+    let _ = writeln!(r, "Lumora {} on {} {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH);
+    let _ = writeln!(
+        r,
+        "Engine: {:?}, RAM & motherboard access: {:?}, version {}",
+        status.mode,
+        status.full_access,
+        status.version.clone().unwrap_or_else(|| "?".into())
+    );
+    if let Some(p) = &status.problem {
+        let _ = writeln!(r, "Engine problem: {p}");
+    }
+    let _ = writeln!(r, "Connection: {:?} {} ({})", snap.connection.status, snap.connection.server, snap.connection.message);
+    let _ = writeln!(r, "\n--- Devices ---");
+    for d in &snap.devices {
+        let _ = writeln!(
+            r,
+            "{} | {} | {:?} | {} LEDs | {} zones | {}{}{}",
+            d.vendor,
+            d.name,
+            d.kind,
+            d.led_count,
+            d.zones.len(),
+            if d.managed { "controlled" } else { "NOT controlled" },
+            if d.controllable { "" } else { " | no direct mode" },
+            if d.virtual_device { " | demo" } else { "" },
+        );
+    }
+    let off: Vec<_> = settings.device_control.iter().filter(|(_, on)| !**on).map(|(id, _)| id.as_str()).collect();
+    if !off.is_empty() {
+        let _ = writeln!(r, "Switched off: {}", off.join(", "));
+    }
+    let services = tauri::async_runtime::spawn_blocking(lighting_services).await.unwrap_or_default();
+    let _ = writeln!(r, "\n--- Other RGB software ---\n{}", if services.is_empty() { "(none found)" } else { &services });
+
+    let dir = host.log_dir();
+    let newest = std::fs::read_dir(&dir).ok().and_then(|it| {
+        it.flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+    });
+    let _ = writeln!(r, "\n--- Engine log ({}) ---", dir.display());
+    match newest.and_then(|e| std::fs::read(e.path()).ok()) {
+        Some(bytes) => {
+            for line in interesting_log_lines(&String::from_utf8_lossy(&bytes)) {
+                let _ = writeln!(r, "{line}");
+            }
+        }
+        None => {
+            let _ = writeln!(r, "(no log found)");
+        }
+    }
+    Ok(r)
+}
+
 /// Lets Lumora drive a device's lights, or leaves it to the vendor's own app.
 #[tauri::command]
 fn set_device_control(app: State<App>, device: String, on: bool) -> CmdResult<Settings> {
@@ -501,6 +604,7 @@ pub fn run() {
             rescan,
             resize_zone,
             set_device_control,
+            diagnostic_report,
             set_launch_at_login,
             open_external,
             check_update,
@@ -521,4 +625,31 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::interesting_log_lines;
+
+    #[test]
+    fn log_filter_keeps_findings_and_collapses_repeats() {
+        let log = "[1][Info   ]    OpenRGB v1.1\n[2][Info   ][DetectionManager] Registering RGB controller ENE DRAM\n\
+                   [3][Warning][HyperX] No response received from device (timeout: 2000 ms)\n\
+                   [4][Error  ][HyperX] Multiple consecutive communication errors detected.\n\
+                   [5][Error  ][HyperX] Multiple consecutive communication errors detected.\n\
+                   [6][Error  ][HyperX] Multiple consecutive communication errors detected.\n\
+                   [7][Info   ]PawnIO initialized successully\n";
+        let lines = interesting_log_lines(log);
+        assert!(lines.iter().any(|l| l.contains("OpenRGB v1.1")));
+        assert!(lines.iter().any(|l| l.contains("Registering RGB controller ENE DRAM")));
+        assert!(lines.iter().any(|l| l.contains("PawnIO")));
+        assert_eq!(lines.iter().filter(|l| l.contains("consecutive")).count(), 2);
+        assert!(!lines.iter().any(|l| l.contains("No response")));
+
+        if let Ok(path) = std::env::var("LUMORA_SAMPLE_LOG") {
+            let text = String::from_utf8_lossy(&std::fs::read(path).unwrap()).to_string();
+            let out = interesting_log_lines(&text);
+            println!("{} lines kept\n{}", out.len(), out.join("\n"));
+        }
+    }
 }

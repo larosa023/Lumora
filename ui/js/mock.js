@@ -137,6 +137,7 @@ const commands = {
   set_enabled: ({ on }) => { state.snapshot.enabled = on; changed(); },
   set_preview: ({ on }) => { preview = on; },
   rescan: () => {},
+  diagnostic_report: () => 'Lumora preview\n(no hardware in the browser preview)',
   set_device_control: ({ device, on }) => {
     state.settings.device_control = { ...(state.settings.device_control || {}), [device]: on };
     const d = state.snapshot.devices.find((x) => x.id === device);
