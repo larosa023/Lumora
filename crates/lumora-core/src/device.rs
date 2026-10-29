@@ -70,6 +70,9 @@ pub struct ZoneInfo {
     /// Index of this zone's first LED in the device's LED array.
     pub start: usize,
     pub count: usize,
+    /// For zones whose length can be set (ARGB headers, strips): the allowed range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resizable: Option<(usize, usize)>,
     /// Matrix zones: `width`, `height` and a row-major map of zone-relative LED
     /// indices (`null` for empty cells).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,7 +134,8 @@ impl DeviceInfo {
                         .map(|&v| (v != NO_LED && (v as usize) < count).then_some(v as usize))
                         .collect(),
                 });
-                let zi = ZoneInfo { name: z.name.clone(), kind, start, count, matrix };
+                let resizable = (z.leds_max > z.leds_min && kind != ZoneKind::Matrix).then_some((z.leds_min as usize, z.leds_max as usize));
+                let zi = ZoneInfo { name: z.name.clone(), kind, start, count, resizable, matrix };
                 start += count;
                 zi
             })
@@ -151,7 +155,8 @@ impl DeviceInfo {
             location: c.location.clone(),
             led_count: start,
             zones,
-            controllable: c.supports_direct() && start > 0,
+            // A device whose headers are all still empty is controllable once sized.
+            controllable: c.supports_direct() && (start > 0 || c.zones.iter().any(|z| z.leds_max > z.leds_min)),
             virtual_device: false,
         }
     }

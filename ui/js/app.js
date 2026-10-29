@@ -351,8 +351,26 @@ function renderStage() {
   renderStageHead();
   const d = selectedDevice();
   if (d) {
-    body.innerHTML = '<canvas class="stage-single"></canvas>';
+    const sizable = d.zones.map((z, i) => ({ ...z, index: i })).filter((z) => z.resizable);
+    const empty = d.led_count === 0;
+    body.innerHTML = `<canvas class="stage-single${sizable.length ? ' with-setup' : ''}"></canvas>`
+      + (empty ? `<div class="empty stage-hint"><strong>Set up this device's LEDs</strong><span>Headers for fans and strips can't tell how many LEDs are plugged in. Enter a number for each one below and they light up right away.</span></div>` : '')
+      + (sizable.length ? `<div class="zone-setup" aria-label="LED counts">
+          <div class="zone-setup-head"><strong>LED counts</strong><span>Each fan usually has 8 to 16 LEDs. For chained fans, add them up: 3 fans with 12 LEDs each is 36.</span></div>
+          ${sizable.map((z) => `<label class="zone-row"><span>${esc(z.name)}</span>
+            <input type="number" inputmode="numeric" min="${z.resizable[0]}" max="${z.resizable[1]}" value="${z.count}" data-zone="${z.index}" aria-label="${esc(z.name)} LED count">
+          </label>`).join('')}
+        </div>` : '');
     makeView(body.querySelector('canvas'), d, { padding: 0.1 });
+    body.querySelectorAll('[data-zone]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const [min, max] = d.zones[+input.dataset.zone].resizable;
+        const size = Math.max(min, Math.min(max, parseInt(input.value, 10) || 0));
+        input.value = size;
+        api.invoke('resize_zone', { device: d.id, zone: +input.dataset.zone, size });
+        toast(`${d.zones[+input.dataset.zone].name} set to ${size} LED${size === 1 ? '' : 's'}`);
+      });
+    });
     return;
   }
   const list = devices();
@@ -365,7 +383,7 @@ function renderStage() {
     const wide = ['keyboard', 'led_strip', 'gpu', 'cooler'].includes(x.kind) || x.led_count > 40;
     return `<button class="rig-card${wide ? ' wide' : ''}" data-device="${esc(x.id)}" aria-label="${esc(names[x.id])}">
       <canvas></canvas>
-      <span class="rig-label"><span>${esc(names[x.id])}</span>${snap().overrides[x.id] ? '<span class="nav-badge">Custom</span>' : ''}</span>
+      <span class="rig-label"><span>${esc(names[x.id])}</span>${x.led_count === 0 ? '<span class="nav-badge">Set up LEDs</span>' : snap().overrides[x.id] ? '<span class="nav-badge">Custom</span>' : ''}</span>
     </button>`;
   }).join('')}</div>`;
   body.querySelectorAll('.rig-card').forEach((card, i) => makeView(card.querySelector('canvas'), list[i], { padding: 0.12, bloom: 0.9 }));
@@ -782,6 +800,10 @@ $('#port').addEventListener('change', (ev) => {
   else ev.target.value = state.app.settings.port;
 });
 $('#reconnectBtn').addEventListener('click', () => api.invoke('reconnect'));
+$('#rescanBtn').addEventListener('click', () => {
+  api.invoke('rescan');
+  toast('Looking for devices again. This takes a few seconds.');
+});
 $('#builtinEngine').addEventListener('change', (ev) => saveSettings({ builtin_engine: ev.target.checked }));
 $('#startMin').addEventListener('change', (ev) => saveSettings({ start_minimized: ev.target.checked }));
 $('#closeTray').addEventListener('change', (ev) => saveSettings({ close_to_tray: ev.target.checked }));

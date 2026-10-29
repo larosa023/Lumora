@@ -56,7 +56,7 @@ fn engine_drives_real_devices() {
 
     wait_for("connection", || engine.snapshot().connection.status == ConnectionStatus::Connected);
     let snap = engine.snapshot();
-    assert_eq!(snap.devices.len(), 6, "demo devices hide once real ones appear");
+    assert_eq!(snap.devices.len(), 7, "demo devices hide once real ones appear");
     assert!(snap.devices.iter().all(|d| !d.virtual_device));
     assert_eq!(snap.devices[0].kind, DeviceKind::Ram);
     assert_ne!(snap.devices[0].id, snap.devices[1].id, "identical sticks get distinct ids");
@@ -64,14 +64,14 @@ fn engine_drives_real_devices() {
     assert_eq!(kbd.led_count, 9);
     assert!(kbd.zones[0].matrix.is_some());
     assert!(changes.load(Ordering::SeqCst) > 0);
-    wait_for("direct mode", || server.received.lock().unwrap().custom_mode.len() == 6);
+    wait_for("direct mode", || server.received.lock().unwrap().custom_mode.len() == 7);
 
     // A static color reaches every device…
     let teal = Rgb::new(0, 200, 180);
     engine.sync_all(EffectConfig { effect: "static".into(), colors: vec![teal], ..Default::default() });
     wait_for("static frame", || {
         let r = server.received.lock().unwrap();
-        (0..6).all(|i| r.leds.get(&i).is_some_and(|l| !l.is_empty() && l.iter().all(|c| *c == teal)))
+        (0..7).all(|i| r.leds.get(&i).is_some_and(|l| !l.is_empty() && l.iter().all(|c| *c == teal)))
     });
 
     // …and then isn't re-sent while nothing changes.
@@ -92,7 +92,23 @@ fn engine_drives_real_devices() {
     server.notify_list_updated();
     sleep(Duration::from_millis(300));
     assert_eq!(engine.snapshot().connection.status, ConnectionStatus::Connected);
-    assert_eq!(engine.snapshot().devices.len(), 6);
+    assert_eq!(engine.snapshot().devices.len(), 7);
+
+    // An empty ARGB header can be sized, and the new LEDs light up.
+    let board = engine.snapshot().devices.into_iter().find(|d| d.kind == DeviceKind::Motherboard).unwrap();
+    assert_eq!(board.led_count, 3);
+    assert_eq!(board.zones[1].resizable, Some((0, 120)));
+    engine.set_enabled(true);
+    engine.resize_zone(&board.id, 1, 16);
+    wait_for("resized zone", || {
+        engine.snapshot().devices.iter().any(|d| d.id == board.id && d.led_count == 19 && d.zones[1].count == 16)
+    });
+    wait_for("leds on the new zone", || server.received.lock().unwrap().leds.get(&6).is_some_and(|l| l.len() == 19));
+
+    // Rescans go to the server.
+    engine.rescan();
+    wait_for("rescan", || server.received.lock().unwrap().rescans == 1);
+    assert_eq!(engine.snapshot().connection.status, ConnectionStatus::Connected);
 }
 
 #[test]

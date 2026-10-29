@@ -18,6 +18,8 @@ pub struct Received {
     pub custom_mode: Vec<u32>,
     pub leds: HashMap<u32, Vec<Rgb>>,
     pub led_updates: usize,
+    pub resizes: usize,
+    pub rescans: usize,
 }
 
 pub struct MockServer {
@@ -29,11 +31,11 @@ pub struct MockServer {
 impl MockServer {
     /// Starts listening on an ephemeral local port (or `port` if non-zero).
     pub fn start(port: u16, controllers: Vec<Controller>, protocol: u32) -> io::Result<MockServer> {
+        let controllers = Arc::new(Mutex::new(controllers));
         let listener = TcpListener::bind(("127.0.0.1", port))?;
         let port = listener.local_addr()?.port();
         let received = Arc::new(Mutex::new(Received::default()));
         let clients = Arc::new(Mutex::new(Vec::new()));
-        let controllers = Arc::new(controllers);
         {
             let received = received.clone();
             let clients = clients.clone();
@@ -44,8 +46,9 @@ impl MockServer {
                     }
                     let received = received.clone();
                     let controllers = controllers.clone();
+                    let clients = clients.clone();
                     thread::spawn(move || {
-                        let _ = serve(stream, &controllers, protocol, &received);
+                        let _ = serve(stream, &controllers, protocol, &received, &clients);
                     });
                 }
             });
@@ -61,7 +64,13 @@ impl MockServer {
     }
 }
 
-fn serve(mut s: TcpStream, controllers: &[Controller], server_protocol: u32, rec: &Mutex<Received>) -> io::Result<()> {
+fn serve(
+    mut s: TcpStream,
+    controllers: &Mutex<Vec<Controller>>,
+    server_protocol: u32,
+    rec: &Mutex<Received>,
+    clients: &Mutex<Vec<TcpStream>>,
+) -> io::Result<()> {
     loop {
         let mut h = [0u8; 16];
         s.read_exact(&mut h)?;
@@ -81,15 +90,36 @@ fn serve(mut s: TcpStream, controllers: &[Controller], server_protocol: u32, rec
                 rec.lock().unwrap().client_name = Some(name);
             }
             packet::REQUEST_CONTROLLER_COUNT => {
-                write_packet(&mut s, 0, id, &(controllers.len() as u32).to_le_bytes())?;
+                let n = controllers.lock().unwrap().len() as u32;
+                write_packet(&mut s, 0, id, &n.to_le_bytes())?;
             }
             packet::REQUEST_CONTROLLER_DATA => {
                 let p = if data.len() >= 4 { u32::from_le_bytes(data[..4].try_into().unwrap()) } else { 0 };
-                if let Some(c) = controllers.get(device as usize) {
-                    write_packet(&mut s, device, id, &encode_controller(c, p.min(server_protocol)))?;
+                let data = controllers.lock().unwrap().get(device as usize).map(|c| encode_controller(c, p.min(server_protocol)));
+                if let Some(d) = data {
+                    write_packet(&mut s, device, id, &d)?;
                 }
             }
             packet::SET_CUSTOM_MODE => rec.lock().unwrap().custom_mode.push(device),
+            packet::RESIZE_ZONE => {
+                let zone = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+                let size = u32::from_le_bytes(data[4..8].try_into().unwrap());
+                if let Some(c) = controllers.lock().unwrap().get_mut(device as usize) {
+                    if let Some(z) = c.zones.get_mut(zone) {
+                        z.leds_count = size.clamp(z.leds_min, z.leds_max);
+                    }
+                    let n: u32 = c.zones.iter().map(|z| z.leds_count).sum();
+                    c.leds = (0..n).map(|i| format!("LED {}", i + 1)).collect();
+                    c.colors = vec![Rgb::BLACK; n as usize];
+                }
+                rec.lock().unwrap().resizes += 1;
+            }
+            packet::REQUEST_RESCAN_DEVICES => {
+                rec.lock().unwrap().rescans += 1;
+                for c in clients.lock().unwrap().iter_mut() {
+                    let _ = write_packet(c, 0, packet::DEVICE_LIST_UPDATED, &[]);
+                }
+            }
             packet::UPDATE_LEDS => {
                 let n = u16::from_le_bytes([data[4], data[5]]) as usize;
                 let colors = (0..n)
@@ -165,8 +195,8 @@ pub fn encode_controller(c: &Controller, protocol: u32) -> Vec<u8> {
     for z in &c.zones {
         s(&mut b, &z.name);
         u(&mut b, z.kind as u32);
-        u(&mut b, z.leds_count);
-        u(&mut b, z.leds_count);
+        u(&mut b, z.leds_min);
+        u(&mut b, z.leds_max);
         u(&mut b, z.leds_count);
         match &z.matrix {
             Some((h, w, map)) => {
@@ -216,7 +246,12 @@ fn controller(kind: i32, name: &str, vendor: &str, location: &str, zones: Vec<Zo
 }
 
 fn zone(name: &str, kind: i32, n: u32) -> Zone {
-    Zone { name: name.into(), kind, leds_count: n, matrix: None }
+    Zone { name: name.into(), kind, leds_min: n, leds_max: n, leds_count: n, matrix: None }
+}
+
+/// An addressable header: empty until told how many LEDs are on it.
+fn header(name: &str) -> Zone {
+    Zone { name: name.into(), kind: ZONE_LINEAR, leds_min: 0, leds_max: 120, leds_count: 0, matrix: None }
 }
 
 /// A believable desktop: two RAM sticks, a GPU, an AIO with fans, a keyboard and a mouse.
@@ -239,8 +274,15 @@ pub fn sample_rig() -> Vec<Controller> {
             "Mini Board",
             "Lumora Labs",
             "HID: /dev/hidraw5",
-            vec![Zone { name: "Keyboard".into(), kind: ZONE_MATRIX, leds_count: 9, matrix: Some((h, w, map)) }],
+            vec![Zone { name: "Keyboard".into(), kind: ZONE_MATRIX, leds_min: 9, leds_max: 9, leds_count: 9, matrix: Some((h, w, map)) }],
         ),
         controller(6, "Viper V3", "Razer", "HID: /dev/hidraw7", vec![zone("Logo", ZONE_SINGLE, 1), zone("Underglow", ZONE_LINEAR, 6)]),
+        controller(
+            0,
+            "ROG STRIX B650E-F GAMING",
+            "ASUS",
+            "HID: /dev/hidraw9",
+            vec![zone("Aura Mainboard", ZONE_LINEAR, 3), header("Aura Addressable 1"), header("Aura Addressable 2")],
+        ),
     ]
 }

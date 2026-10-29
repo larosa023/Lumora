@@ -136,6 +136,8 @@ const commands = {
   set_brightness: ({ value }) => { state.snapshot.brightness = value; changed(); },
   set_enabled: ({ on }) => { state.snapshot.enabled = on; changed(); },
   set_preview: ({ on }) => { preview = on; },
+  rescan: () => {},
+  resize_zone: () => {},
   save_profile: ({ name }) => {
     const p = { name, global: clone(state.snapshot.global), overrides: clone(state.snapshot.overrides), brightness: state.snapshot.brightness };
     const i = state.profiles.findIndex((x) => x.name.toLowerCase() === name.toLowerCase());

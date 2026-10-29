@@ -29,8 +29,10 @@ pub mod packet {
     pub const REQUEST_CONTROLLER_COUNT: u32 = 0;
     pub const REQUEST_CONTROLLER_DATA: u32 = 1;
     pub const REQUEST_PROTOCOL_VERSION: u32 = 40;
+    pub const REQUEST_RESCAN_DEVICES: u32 = 140;
     pub const SET_CLIENT_NAME: u32 = 50;
     pub const DEVICE_LIST_UPDATED: u32 = 100;
+    pub const RESIZE_ZONE: u32 = 1000;
     pub const UPDATE_LEDS: u32 = 1050;
     pub const UPDATE_ZONE_LEDS: u32 = 1051;
     pub const SET_CUSTOM_MODE: u32 = 1100;
@@ -85,6 +87,8 @@ pub struct Mode {
 pub struct Zone {
     pub name: String,
     pub kind: i32,
+    pub leds_min: u32,
+    pub leds_max: u32,
     pub leds_count: u32,
     /// `(height, width, map)` – map holds zone-relative LED indices or [`NO_LED`].
     pub matrix: Option<(u32, u32, Vec<u32>)>,
@@ -232,6 +236,19 @@ impl Client {
         self.send(index, packet::SET_CUSTOM_MODE, &[])
     }
 
+    /// Sets how many LEDs a resizable zone has (an ARGB header with fans or a
+    /// strip on it). The server saves the size in its own configuration.
+    pub fn resize_zone(&mut self, index: u32, zone: u32, size: u32) -> io::Result<()> {
+        let mut data = (zone as i32).to_le_bytes().to_vec();
+        data.extend_from_slice(&(size as i32).to_le_bytes());
+        self.send(index, packet::RESIZE_ZONE, &data)
+    }
+
+    /// Asks the server to look for hardware again.
+    pub fn rescan(&mut self) -> io::Result<()> {
+        self.send(0, packet::REQUEST_RESCAN_DEVICES, &[])
+    }
+
     pub fn update_leds(&mut self, index: u32, colors: &[Rgb]) -> io::Result<()> {
         self.send(index, packet::UPDATE_LEDS, &encode_leds(colors))
     }
@@ -356,8 +373,8 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
     for _ in 0..num_zones {
         let name = r.string()?;
         let kind = r.i32()?;
-        let _leds_min = r.u32()?;
-        let _leds_max = r.u32()?;
+        let leds_min = r.u32()?;
+        let leds_max = r.u32()?;
         let leds_count = r.u32()?;
         let matrix_len = r.u16()? as usize;
         let matrix = if matrix_len >= 8 {
@@ -373,7 +390,7 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
             r.take(matrix_len)?;
             None
         };
-        zones.push(Zone { name, kind, leds_count, matrix });
+        zones.push(Zone { name, kind, leds_min, leds_max, leds_count, matrix });
     }
 
     let num_leds = r.u16()?;

@@ -782,6 +782,72 @@ button.chip:hover {
   font-weight: 600;
 }
 
+.stage-single.with-setup {
+  height: auto;
+  bottom: 150px;
+}
+
+.stage-hint {
+  pointer-events: none;
+  bottom: 40%;
+}
+
+.zone-setup {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(10, 10, 16, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.zone-setup-head {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.zone-setup-head strong {
+  font-weight: 600;
+}
+
+.zone-setup-head span {
+  color: #8f8ca6;
+  font-size: 12px;
+}
+
+.zone-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: #b9b6cc;
+}
+
+.zone-row input {
+  width: 120px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #ecebf5;
+  outline: none;
+  user-select: text;
+}
+
+.zone-row input:focus {
+  border-color: var(--accent);
+}
+
 /* --- Effects shelf --------------------------------------------------------- */
 
 .shelf {

@@ -9,7 +9,7 @@ fn linear(zones: &[(&str, usize)]) -> Vec<ZoneInfo> {
         .iter()
         .map(|&(name, count)| {
             let kind = if count == 1 { ZoneKind::Single } else { ZoneKind::Linear };
-            let z = ZoneInfo { name: name.into(), kind, start, count, matrix: None };
+            let z = ZoneInfo { name: name.into(), kind, start, count, resizable: None, matrix: None };
             start += count;
             z
         })
@@ -58,6 +58,7 @@ fn keyboard_75() -> ZoneInfo {
         kind: ZoneKind::Matrix,
         start: 0,
         count: n,
+        resizable: None,
         matrix: Some(Matrix { width: 16, height: 6, map }),
     }
 }

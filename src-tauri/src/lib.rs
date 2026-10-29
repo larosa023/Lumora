@@ -208,6 +208,16 @@ fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Sett
 }
 
 #[tauri::command]
+fn rescan(app: State<App>) {
+    app.engine.rescan();
+}
+
+#[tauri::command]
+fn resize_zone(app: State<App>, device: String, zone: usize, size: usize) {
+    app.engine.resize_zone(&device, zone, size);
+}
+
+#[tauri::command]
 fn reconnect(app: State<App>) {
     app.engine.reconnect();
 }
@@ -477,6 +487,8 @@ pub fn run() {
             delete_profile,
             update_settings,
             reconnect,
+            rescan,
+            resize_zone,
             set_launch_at_login,
             open_external,
             check_update,

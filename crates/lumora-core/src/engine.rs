@@ -89,6 +89,8 @@ struct State {
     demo: Vec<Runtime>,
     preview: bool,
     reconnect: bool,
+    rescan: bool,
+    resizes: Vec<(String, usize, usize)>,
     /// 0 = dark, 1 = full; eases toward `enabled` for soft on/off.
     fade: f32,
 }
@@ -152,6 +154,8 @@ impl Engine {
             demo: Vec::new(),
             preview: false,
             reconnect: false,
+            rescan: false,
+            resizes: Vec::new(),
         };
         state.refresh_demo();
         let shared = Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new(), stop: AtomicBool::new(false), listener });
@@ -237,6 +241,16 @@ impl Engine {
             s.settings = settings;
             s.refresh_demo();
         });
+    }
+
+    /// Asks the hardware engine to look for devices again.
+    pub fn rescan(&self) {
+        self.update(|s| s.rescan = true);
+    }
+
+    /// Sets how many LEDs are on a resizable zone (an ARGB header, a strip).
+    pub fn resize_zone(&self, device: &str, zone: usize, size: usize) {
+        self.update(|s| s.resizes.push((device.to_string(), zone, size)));
     }
 
     pub fn reconnect(&self) {
@@ -373,6 +387,8 @@ fn run(shared: Arc<Shared>) {
     let mut conn = Conn::Idle;
     let mut next_attempt = Instant::now();
     let mut failures = 0u32;
+    // When some devices didn't answer, look again a little later.
+    let mut retry_at: Option<Instant> = None;
 
     while !shared.stop.load(Ordering::SeqCst) {
         // --- Connection upkeep -------------------------------------------------
@@ -389,6 +405,36 @@ fn run(shared: Arc<Shared>) {
             next_attempt = Instant::now();
             failures = 0;
         }
+        // Requests that need the live connection.
+        let mut refresh = false;
+        if let Conn::Ready(c) = &mut conn {
+            let (resizes, rescan) = {
+                let mut s = shared.lock();
+                let resizes: Vec<(u32, usize, usize)> = std::mem::take(&mut s.resizes)
+                    .into_iter()
+                    .filter_map(|(id, zone, size)| {
+                        s.real.iter().find(|d| d.info.id == id).and_then(|d| match d.sink {
+                            Sink::OpenRgb(i) => Some((i, zone, size)),
+                            Sink::Virtual => None,
+                        })
+                    })
+                    .collect();
+                (resizes, std::mem::take(&mut s.rescan))
+            };
+            for (i, zone, size) in resizes {
+                let _ = c.resize_zone(i, zone as u32, size as u32);
+                refresh = true;
+            }
+            if rescan {
+                // The server re-detects, then announces the new list.
+                let _ = c.rescan();
+                retry_at = Some(Instant::now() + Duration::from_secs(15));
+            }
+            if retry_at.is_some_and(|t| Instant::now() >= t) {
+                retry_at = None;
+                refresh = true;
+            }
+        }
         conn = match conn {
             Conn::Ready(c) if !c.is_alive() => {
                 drop_real_devices(&shared);
@@ -396,7 +442,7 @@ fn run(shared: Arc<Shared>) {
                 next_attempt = Instant::now() + Duration::from_secs(2);
                 Conn::Idle
             }
-            Conn::Ready(c) if c.take_list_updated() => Conn::Pending(spawn_connect(host.clone(), port, Some(c))),
+            Conn::Ready(c) if refresh || c.take_list_updated() => Conn::Pending(spawn_connect(host.clone(), port, Some(c))),
             Conn::Idle if Instant::now() >= next_attempt => {
                 if failures == 0 {
                     set_connection(&shared, ConnectionStatus::Connecting, server.clone(), "", 0);
@@ -407,6 +453,7 @@ fn run(shared: Arc<Shared>) {
                 Ok(Ok((mut c, controllers, skipped))) => match install(&shared, &mut c, controllers, skipped) {
                     Ok(()) => {
                         failures = 0;
+                        retry_at = (skipped > 0).then(|| Instant::now() + Duration::from_secs(20));
                         Conn::Ready(c)
                     }
                     Err(_) => Conn::Idle,
