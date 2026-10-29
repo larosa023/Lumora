@@ -61,7 +61,7 @@ jobs:
           # __VERSION__ is filled in from tauri.conf.json.
           tagName: v__VERSION__
           releaseName: 'Lumora v__VERSION__'
-          releaseBody: 'See the changes below. Lumora installs this update for you from Settings, or from the Update button when it appears.'
+          releaseBody: 'New here? Download the installer for your system below (Windows: the .exe). Already have Lumora? It offers this update on its own.'
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
