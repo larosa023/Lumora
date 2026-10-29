@@ -255,21 +255,30 @@ fn interesting_log_lines(text: &str) -> Vec<String> {
     out.split_off(skip)
 }
 
-#[cfg(windows)]
+/// Other lighting apps that are installed or running, for the report.
 fn lighting_services() -> String {
-    use std::os::windows::process::CommandExt;
-    let script = "Get-Service | Where-Object { $_.Name -match 'Lighting|Aura|Armoury|asComSvc|ROG|NZXT|CAM|iCUE|Corsair|MSI|Mystic|RGBFusion|Gigabyte|Razer|Synapse|LGHUB|SignalRGB|NGENUITY' } | ForEach-Object { \"$($_.Name) ($($_.DisplayName)): $($_.Status)\" }; Get-Process | Where-Object { $_.ProcessName -match 'ArmouryCrate|LightingService|NZXT CAM|iCUE|SignalRgb|MysticLight|RGBFusion|Synapse|lghub|NGENUITY|OpenRGB' } | ForEach-Object { \"process: $($_.ProcessName)\" } | Sort-Object -Unique";
-    std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
-}
-
-#[cfg(not(windows))]
-fn lighting_services() -> String {
-    String::new()
+    const SERVICES: &[&str] = &[
+        "LightingService", "ArmouryCrateService", "ArmouryCrateControlInterface", "AsusCertService", "asComSvc",
+        "CorsairService", "CorsairLLAService", "CAM_Service", "NZXT CAM Service", "MSI_Center_Service",
+        "MysticLight2_Service", "LGHUBUpdaterService", "Razer Synapse Service", "SignalRgbService",
+    ];
+    const APPS: &[&str] = &[
+        "armourycrate", "lightingservice", "nzxt cam", "icue", "signalrgb", "mysticlight", "rgbfusion", "synapse", "lghub", "ngenuity", "openrgb",
+    ];
+    let mut lines: Vec<String> = SERVICES
+        .iter()
+        .filter(|s| lumora_core::system::service_exists(s))
+        .map(|s| format!("service: {s}"))
+        .collect();
+    let mut running: Vec<String> = lumora_core::system::processes()
+        .into_iter()
+        .filter(|p| APPS.iter().any(|a| p.name.contains(a)))
+        .map(|p| format!("process: {}", p.name))
+        .collect();
+    running.sort();
+    running.dedup();
+    lines.extend(running);
+    lines.join("\n")
 }
 
 /// A plain-text report for troubleshooting a PC, to copy and paste.

@@ -308,24 +308,16 @@ impl EngineHost {
             std::env::var("USERNAME").unwrap_or_default()
         );
         let args = format!("{ELEVATED_FLAG} {action} \"{}\" \"{}\" \"{}\"", dir.display(), result.display(), user);
-        // Start-Process -Verb RunAs shows the UAC prompt and waits. Values travel
-        // in environment variables so nothing needs shell quoting.
-        let script = "try { $p = Start-Process -FilePath $env:LUMORA_EXE -ArgumentList $env:LUMORA_ARGS -Verb RunAs -WindowStyle Hidden -Wait -PassThru; exit $p.ExitCode } catch { exit 1223 }";
-        let status = hidden(
-            Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
-                .env("LUMORA_EXE", &exe)
-                .env("LUMORA_ARGS", &args),
-        )
-        .status()
-        .map_err(|e| format!("Couldn't ask Windows for permission: {e}"))?;
+        // The standard Windows permission prompt, straight from the OS.
+        let outcome = lumora_core::system::run_as_admin(&exe, &args);
         let detail = std::fs::read_to_string(&result).unwrap_or_default();
         let _ = std::fs::remove_file(&result);
-        match status.code() {
-            Some(0) => Ok(()),
-            Some(1223) => Err("Windows didn't give permission, so nothing changed".into()),
-            _ if !detail.trim().is_empty() => Err(detail.trim().to_string()),
-            _ => Err("The setup didn't finish. Nothing was changed.".into()),
+        match outcome {
+            Ok(0) => Ok(()),
+            Err(lumora_core::system::ElevateError::Declined) => Err("Windows didn't give permission, so nothing changed".into()),
+            Err(lumora_core::system::ElevateError::Failed(code)) => Err(format!("Couldn't ask Windows for permission (error {code})")),
+            Ok(_) if !detail.trim().is_empty() => Err(detail.trim().to_string()),
+            Ok(_) => Err("The setup didn't finish. Nothing was changed.".into()),
         }
     }
 
@@ -354,7 +346,11 @@ impl EngineHost {
 }
 
 fn usbdk_installed() -> bool {
-    cfg!(windows) && quiet_ok("sc", &["query", "UsbDk"])
+    lumora_core::system::service_exists("UsbDk")
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
 }
 
 /// OpenRGB detectors Lumora keeps off, because Lumora drives those devices
@@ -489,23 +485,23 @@ fn stop_installed_engine() {
     let _ = quiet_ok("schtasks", &["/end", "/tn", TASK_NAME]);
     let exe = openrgb_exe(&installed_dir());
     // Only processes running the installed copy, by path.
-    let filter = format!("$_.Path -eq '{}'", exe.display().to_string().replace('\'', "''"));
-    let _ = quiet_ok(
-        "powershell",
-        &["-NoProfile", "-NonInteractive", "-Command", &format!("Get-Process OpenRGB -ErrorAction SilentlyContinue | Where-Object {{ {filter} }} | Stop-Process -Force")],
-    );
+    for p in lumora_core::system::processes() {
+        if p.name == "openrgb.exe" && lumora_core::system::process_path(p.pid).is_some_and(|path| same_file(&path, &exe)) {
+            lumora_core::system::kill(p.pid);
+        }
+    }
     std::thread::sleep(Duration::from_millis(800));
 }
 
 fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
     // 1. The PawnIO driver, for SMBus (RAM, motherboards).
-    if !quiet_ok("sc", &["query", "PawnIO"]) {
+    if !lumora_core::system::service_exists("PawnIO") {
         let setup = engine.join("PawnIO_setup.exe");
         if !setup.is_file() {
             return Err("The PawnIO driver installer is missing from this copy of Lumora".into());
         }
         let ok = hidden(Command::new(&setup).args(["-install", "-silent"]).current_dir(engine)).status().is_ok_and(|s| s.success());
-        if !ok && !quiet_ok("sc", &["query", "PawnIO"]) {
+        if !ok && !lumora_core::system::service_exists("PawnIO") {
             return Err("Couldn't install the PawnIO driver that RAM and motherboard lighting need".into());
         }
     }

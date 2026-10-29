@@ -17,6 +17,7 @@ pub mod engine;
 pub mod mock;
 pub mod openrgb;
 pub mod store;
+pub mod system;
 pub mod temps;
 
 pub use color::Rgb;

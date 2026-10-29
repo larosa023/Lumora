@@ -72,32 +72,5 @@ impl Backend for HidBackend {
 
 /// Running processes, lowercased, for spotting vendor apps.
 pub fn running_processes() -> HashSet<String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let out = std::process::Command::new("tasklist")
-            .args(["/FO", "CSV", "/NH"])
-            .creation_flags(0x0800_0000)
-            .output();
-        if let Ok(o) = out {
-            return String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| l.split("\",\"").next())
-                .map(|n| n.trim_matches('"').to_lowercase())
-                .collect();
-        }
-        HashSet::new()
-    }
-    #[cfg(not(windows))]
-    {
-        let mut set = HashSet::new();
-        if let Ok(dir) = std::fs::read_dir("/proc") {
-            for e in dir.flatten() {
-                if let Ok(name) = std::fs::read_to_string(e.path().join("comm")) {
-                    set.insert(name.trim().to_lowercase());
-                }
-            }
-        }
-        set
-    }
+    crate::system::running_process_names()
 }
