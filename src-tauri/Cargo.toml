@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-lumora-core = { path = "../crates/lumora-core", features = ["hid"] }
+lumora-core = { path = "../crates/lumora-core", features = ["hid", "usb"] }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }

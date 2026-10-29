@@ -222,6 +222,7 @@ impl EngineHost {
     fn spawn_child(&self) -> std::io::Result<Child> {
         let dir = self.dir.as_ref().expect("bundled engine present");
         std::fs::create_dir_all(&self.config_dir)?;
+        prepare_engine_config(&self.config_dir);
         let exe = openrgb_exe(dir);
         hidden(Command::new(&exe).args(server_args(&self.config_dir)).current_dir(exe.parent().unwrap())).spawn()
     }
@@ -341,6 +342,48 @@ impl EngineHost {
         self.start();
         r
     }
+
+    /// Installs the UsbDk access driver that Corsair Hydro Pro coolers need on
+    /// Windows. Unlike swapping the cooler's driver, UsbDk leaves iCUE working.
+    pub fn install_cooler_driver(self: &Arc<Self>) -> Result<(), String> {
+        if !cfg!(windows) || usbdk_installed() {
+            return Ok(());
+        }
+        self.run_elevated("cooler-driver")
+    }
+}
+
+fn usbdk_installed() -> bool {
+    cfg!(windows) && quiet_ok("sc", &["query", "UsbDk"])
+}
+
+/// OpenRGB detectors Lumora keeps off, because Lumora drives those devices
+/// itself and the detector would hold them for the whole session (taking them
+/// away from iCUE even when the user hasn't asked Lumora to run them).
+const DISABLED_DETECTORS: &[&str] = &["Corsair Hydro Series"];
+
+/// Makes sure the engine config in `dir` has Lumora's detector choices.
+fn prepare_engine_config(dir: &Path) {
+    let file = dir.join("OpenRGB.json");
+    let mut root: serde_json::Value = std::fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut changed = false;
+    for name in DISABLED_DETECTORS {
+        let detectors = &mut root["Detectors"]["detectors"];
+        if detectors.get(*name) != Some(&serde_json::Value::Bool(false)) {
+            detectors[*name] = serde_json::Value::Bool(false);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = std::fs::create_dir_all(dir);
+        if let Ok(text) = serde_json::to_string_pretty(&root) {
+            let _ = std::fs::write(&file, text);
+        }
+    }
 }
 
 impl Drop for EngineHost {
@@ -351,7 +394,7 @@ impl Drop for EngineHost {
 
 // --- Elevated helper ---------------------------------------------------------
 //
-// `Lumora.exe --lumora-elevated <install|remove> <engine dir> <result file> <user>`
+// `Lumora.exe --lumora-elevated <install|remove|cooler-driver> <engine dir> <result file> <user>`
 // runs before any window exists, does its job and exits.
 
 fn xml_escape(s: &str) -> String {
@@ -479,6 +522,7 @@ fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
     }
     let config = installed_config_dir();
     std::fs::create_dir_all(&config).map_err(|e| e.to_string())?;
+    prepare_engine_config(&config);
 
     // 3. Start it elevated at every sign-in.
     let xml = task_xml(user, &openrgb_exe(&target), &server_args(&config));
@@ -491,6 +535,37 @@ fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
     }
     let _ = quiet_ok("schtasks", &["/run", "/tn", TASK_NAME]);
     Ok(())
+}
+
+fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
+    // A full-access engine must not grab the coolers once UsbDk can reach them.
+    let config = installed_config_dir();
+    let full_access = config.is_dir();
+    if full_access {
+        stop_installed_engine();
+        prepare_engine_config(&config);
+    }
+    let result = if usbdk_installed() {
+        Ok(())
+    } else {
+        let msi = engine.join("UsbDk_x64.msi");
+        if !msi.is_file() {
+            Err("The UsbDk driver installer is missing from this copy of Lumora".to_string())
+        } else {
+            let msi = msi.display().to_string();
+            let code = hidden(Command::new("msiexec").args(["/i", msi.as_str(), "/qn", "/norestart"])).status().ok().and_then(|s| s.code());
+            // 3010 and 1641: installed, a restart finishes the job.
+            if matches!(code, Some(0 | 3010 | 1641)) || usbdk_installed() {
+                Ok(())
+            } else {
+                Err(format!("Couldn't install the UsbDk driver (code {})", code.unwrap_or(-1)))
+            }
+        }
+    };
+    if full_access {
+        let _ = quiet_ok("schtasks", &["/run", "/tn", TASK_NAME]);
+    }
+    result
 }
 
 fn elevated_remove() -> Result<(), String> {
@@ -517,6 +592,7 @@ pub fn run_elevated_from_args() -> Option<i32> {
     let result = match action.as_str() {
         "install" => elevated_install(&engine, &user),
         "remove" => elevated_remove(),
+        "cooler-driver" => elevated_cooler_driver(&engine),
         other => Err(format!("Unknown action {other}")),
     };
     match result {
@@ -548,5 +624,19 @@ mod tests {
     #[test]
     fn not_elevated_by_default() {
         assert_eq!(run_elevated_from_args(), None);
+    }
+
+    #[test]
+    fn engine_config_keeps_corsair_hydro_detector_off() {
+        let dir = std::env::temp_dir().join(format!("lumora-cfg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("OpenRGB.json"), r#"{"Detectors":{"detectors":{"Corsair Hydro Series":true,"ENE SMBus DRAM":true}},"Theme":{"theme":"dark"}}"#).unwrap();
+        prepare_engine_config(&dir);
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("OpenRGB.json")).unwrap()).unwrap();
+        assert_eq!(v["Detectors"]["detectors"]["Corsair Hydro Series"], false);
+        assert_eq!(v["Detectors"]["detectors"]["ENE SMBus DRAM"], true);
+        assert_eq!(v["Theme"]["theme"], "dark");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -6,16 +6,20 @@
 //! until the user turns on "Let Lumora run this cooler", because these devices
 //! only answer one app at a time.
 //!
-//! Protocol knowledge for the NZXT Kraken family comes from the open research
-//! documented by the liquidctl project and the Linux `nzxt-kraken3` driver.
-//! The implementation here is Lumora's own.
+//! Protocol knowledge for the NZXT Kraken family and the Corsair Hydro Pro
+//! family comes from the open research documented by the liquidctl project
+//! and the Linux `nzxt-kraken3` driver. The implementation here is Lumora's own.
 
 pub mod curve;
 pub mod fake;
+pub mod family;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod hydro;
 pub mod kraken;
 pub mod manager;
+#[cfg(feature = "usb")]
+pub mod usb;
 
 use std::collections::BTreeMap;
 use std::io;
@@ -26,9 +30,11 @@ use serde::{Deserialize, Serialize};
 pub use curve::{Curve, Preset, SpeedSetting};
 pub use manager::{CoolerView, CoolingManager};
 
-/// A raw HID connection: 64-byte reports, first byte is the report id.
-pub trait HidIo: Send {
-    fn write(&mut self, report: &[u8]) -> io::Result<()>;
+/// A raw connection to a cooler: send a message, read what comes back.
+/// HID coolers send 64-byte reports (first byte is the report id); USB
+/// coolers send bulk messages.
+pub trait Link: Send {
+    fn write(&mut self, msg: &[u8]) -> io::Result<()>;
     /// Returns `Ok(None)` on timeout.
     fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>>;
 }
@@ -41,13 +47,47 @@ pub struct FoundCooler {
     pub vid: u16,
     pub pid: u16,
     pub serial: String,
+    /// The OS can see the cooler but Lumora can't talk to it until a one-time
+    /// setup (on Windows: the UsbDk access driver for Corsair Hydro Pro).
+    pub needs_setup: bool,
 }
 
 /// Finds coolers and opens them. The real implementation uses the OS HID
 /// stack; tests use [`fake::FakeBackend`].
 pub trait Backend: Send {
     fn discover(&mut self) -> Vec<FoundCooler>;
-    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn HidIo>>;
+    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>>;
+}
+
+/// Several backends as one (HID for NZXT, raw USB for Corsair Hydro Pro).
+pub struct MultiBackend {
+    backends: Vec<Box<dyn Backend>>,
+    owners: BTreeMap<String, usize>,
+}
+
+impl MultiBackend {
+    pub fn new(backends: Vec<Box<dyn Backend>>) -> Self {
+        MultiBackend { backends, owners: BTreeMap::new() }
+    }
+}
+
+impl Backend for MultiBackend {
+    fn discover(&mut self) -> Vec<FoundCooler> {
+        self.owners.clear();
+        let mut all = Vec::new();
+        for (i, b) in self.backends.iter_mut().enumerate() {
+            for f in b.discover() {
+                self.owners.insert(f.id.clone(), i);
+                all.push(f);
+            }
+        }
+        all
+    }
+
+    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
+        let i = *self.owners.get(&cooler.id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
+        self.backends[i].open(cooler)
+    }
 }
 
 /// The vendor app that normally owns a cooler, by USB vendor id.
@@ -85,6 +125,45 @@ impl Default for ScreenSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LightMode {
+    /// One color.
+    #[default]
+    Static,
+    /// Fades between the colors.
+    Shift,
+    /// Breathes each color in turn.
+    Pulse,
+    /// Blinks each color in turn.
+    Blink,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LightSpeed {
+    Slower,
+    #[default]
+    Normal,
+    Faster,
+}
+
+/// Lighting a cooler runs by itself (the Corsair Hydro Pro's pump logo).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LightSettings {
+    pub mode: LightMode,
+    /// `#rrggbb`, up to four.
+    pub colors: Vec<String>,
+    pub speed: LightSpeed,
+}
+
+impl Default for LightSettings {
+    fn default() -> Self {
+        LightSettings { mode: LightMode::Static, colors: vec!["#7c5cff".into(), "#00d2ff".into()], speed: LightSpeed::Normal }
+    }
+}
+
 /// What the user chose for one cooler. Saved with the app settings.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -94,6 +173,7 @@ pub struct CoolerConfig {
     /// Per channel ("pump", "fan").
     pub speeds: BTreeMap<String, SpeedSetting>,
     pub screen: ScreenSettings,
+    pub light: LightSettings,
 }
 
 /// One reading from a cooler.
@@ -104,6 +184,10 @@ pub struct CoolerStatus {
     pub pump_duty: Option<u8>,
     pub fan_rpm: Option<u32>,
     pub fan_duty: Option<u8>,
+    /// Each fan's speed, when the cooler reports them one by one.
+    pub fan_rpms: Vec<u32>,
+    /// The pump's built-in speed mode, for pumps that only have modes.
+    pub pump_mode: Option<String>,
     /// The cooler reported a fault (often: USB connected but no SATA power).
     pub fault: bool,
 }

@@ -1,4 +1,4 @@
-//! A simulated Kraken for tests and for trying the cooling page without
+//! A simulated Kraken and Corsair Hydro Pro for tests and for trying the cooling page without
 //! hardware (`LUMORA_FAKE_COOLER=1`).
 
 use std::collections::VecDeque;
@@ -6,8 +6,9 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::hydro::CORSAIR_VID;
 use super::kraken::NZXT_VID;
-use super::{Backend, FoundCooler, HidIo};
+use super::{Backend, FoundCooler, Link};
 
 #[derive(Debug)]
 pub struct FakeKrakenState {
@@ -127,7 +128,7 @@ impl FakeKrakenState {
 
 pub struct FakeKraken(pub Arc<Mutex<FakeKrakenState>>);
 
-impl HidIo for FakeKraken {
+impl Link for FakeKraken {
     fn write(&mut self, report: &[u8]) -> io::Result<()> {
         let mut s = self.0.lock().unwrap();
         if s.unplugged {
@@ -153,32 +154,139 @@ impl HidIo for FakeKraken {
     }
 }
 
+/// A simulated Corsair Hydro Pro.
+#[derive(Debug)]
+pub struct FakeHydroState {
+    pub pid: u16,
+    pub port: String,
+    pub liquid_c: f32,
+    pub pump_mode: u8,
+    /// Last curve per fan: 7 temperatures then 7 duties.
+    pub fan_curves: Vec<(u8, Vec<u8>)>,
+    pub fan_fixed: Vec<(u8, u8)>,
+    pub light: Vec<Vec<u8>>,
+    pub writes: usize,
+    /// Simulates a missing access driver.
+    pub needs_setup: bool,
+    queue: VecDeque<Vec<u8>>,
+}
+
+impl FakeHydroState {
+    pub fn new(pid: u16) -> Self {
+        FakeHydroState {
+            pid,
+            port: "1-4".into(),
+            liquid_c: 31.7,
+            pump_mode: 1,
+            fan_curves: Vec::new(),
+            fan_fixed: Vec::new(),
+            light: Vec::new(),
+            writes: 0,
+            needs_setup: false,
+            queue: VecDeque::new(),
+        }
+    }
+
+    fn handle(&mut self, m: &[u8]) {
+        self.writes += 1;
+        let mut reply = vec![m[0], 0x12, 0x34];
+        match m[0] {
+            0xAA => reply.extend([1, 1, 15, 4]),
+            0xA9 => reply.extend([self.liquid_c.trunc() as u8, ((self.liquid_c.fract() * 10.0).round() as u8).min(9)]),
+            0x41 => {
+                let rpm: u16 = 900 + m[1] as u16 * 20;
+                reply.push(m[1]);
+                reply.extend(rpm.to_be_bytes());
+            }
+            0x33 => reply.push(self.pump_mode),
+            0x31 => reply.extend((2000u16 + self.pump_mode as u16 * 350).to_be_bytes()),
+            0x32 => self.pump_mode = m[1],
+            0x40 => self.fan_curves.push((m[1], m[2..16].to_vec())),
+            0x42 => self.fan_fixed.push((m[1], m[2])),
+            0x52..=0x58 => self.light.push(m.to_vec()),
+            _ => {}
+        }
+        self.queue.push_back(reply);
+    }
+}
+
+pub struct FakeHydro(pub Arc<Mutex<FakeHydroState>>);
+
+impl Link for FakeHydro {
+    fn write(&mut self, msg: &[u8]) -> io::Result<()> {
+        assert!(msg.len() <= 32, "Hydro messages are short");
+        self.0.lock().unwrap().handle(msg);
+        Ok(())
+    }
+
+    fn read(&mut self, _timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.0.lock().unwrap().queue.pop_front())
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct FakeBackend {
     pub devices: Arc<Mutex<Vec<Arc<Mutex<FakeKrakenState>>>>>,
+    pub hydros: Arc<Mutex<Vec<Arc<Mutex<FakeHydroState>>>>>,
 }
 
 impl FakeBackend {
     pub fn with_kraken(pid: u16) -> (FakeBackend, Arc<Mutex<FakeKrakenState>>) {
         let state = Arc::new(Mutex::new(FakeKrakenState::new(pid, "FAKE0001")));
-        let backend = FakeBackend { devices: Arc::new(Mutex::new(vec![state.clone()])) };
+        let backend = FakeBackend { devices: Arc::new(Mutex::new(vec![state.clone()])), ..Default::default() };
         (backend, state)
+    }
+
+    pub fn with_hydro(pid: u16) -> (FakeBackend, Arc<Mutex<FakeHydroState>>) {
+        let backend = FakeBackend::default();
+        let state = backend.add_hydro(pid);
+        (backend, state)
+    }
+
+    pub fn add_hydro(&self, pid: u16) -> Arc<Mutex<FakeHydroState>> {
+        let state = Arc::new(Mutex::new(FakeHydroState::new(pid)));
+        self.hydros.lock().unwrap().push(state.clone());
+        state
+    }
+
+    fn hydro_id(d: &FakeHydroState) -> String {
+        format!("usb:{CORSAIR_VID:04x}:{:04x}:{}", d.pid, d.port)
     }
 }
 
 impl Backend for FakeBackend {
     fn discover(&mut self) -> Vec<FoundCooler> {
-        self.devices
+        let mut out: Vec<FoundCooler> = self
+            .devices
             .lock()
             .unwrap()
             .iter()
             .map(|d| d.lock().unwrap())
             .filter(|d| !d.unplugged)
-            .map(|d| FoundCooler { id: format!("hid:{NZXT_VID:04x}:{:04x}:{}", d.pid, d.serial), vid: NZXT_VID, pid: d.pid, serial: d.serial.clone() })
-            .collect()
+            .map(|d| FoundCooler {
+                id: format!("hid:{NZXT_VID:04x}:{:04x}:{}", d.pid, d.serial),
+                vid: NZXT_VID,
+                pid: d.pid,
+                serial: d.serial.clone(),
+                needs_setup: false,
+            })
+            .collect();
+        for h in self.hydros.lock().unwrap().iter() {
+            let d = h.lock().unwrap();
+            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup });
+        }
+        out
     }
 
-    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn HidIo>> {
+    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
+        if cooler.vid == CORSAIR_VID {
+            let hydros = self.hydros.lock().unwrap();
+            let d = hydros
+                .iter()
+                .find(|d| Self::hydro_id(&d.lock().unwrap()) == cooler.id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "gone"))?;
+            return Ok(Box::new(FakeHydro(d.clone())));
+        }
         let devices = self.devices.lock().unwrap();
         let d = devices
             .iter()

@@ -8,9 +8,12 @@ license.workspace = true
 [features]
 # Real USB HID access for coolers (the app turns this on; tests use a fake).
 hid = ["dep:hidapi"]
+# Raw USB (libusb) for coolers that aren't HID, like Corsair Hydro Pro.
+usb = ["dep:rusb"]
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 libloading = "0.8"
 hidapi = { version = "2.6", optional = true, default-features = false, features = ["linux-native-basic-udev", "windows-native", "macos-shared-device"] }
+rusb = { version = "0.9", optional = true, features = ["vendored"] }

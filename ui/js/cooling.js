@@ -7,6 +7,9 @@ const PRESETS = [
   ['performance', 'Performance'],
 ];
 const T0 = 20, T1 = 59, TMAX = 60;
+const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink']];
+const LIGHT_SPEEDS = [['slower', 'Slow'], ['normal', 'Normal'], ['faster', 'Fast']];
+const PUMP_MODE_NAMES = { quiet: 'Silent mode', balanced: 'Balanced mode', performance: 'Performance mode' };
 
 let ctx = null;
 let pendingSave = null;
@@ -33,7 +36,9 @@ export function sidebarHtml() {
     const live = c.state === 'active' && c.status?.liquid_c != null;
     const badge = live
       ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${fmt(c.status.liquid_c, 1)}°</span>`
-      : c.takeover
+      : c.takeover && c.needs_setup
+        ? '<span class="nav-badge muted">Setup</span>'
+        : c.takeover
         ? '<span class="nav-badge muted">…</span>'
         : `<span class="nav-badge muted">${ctx.esc((c.owner_app || 'Off').replace(/^(NZXT|Corsair) /, ''))}</span>`;
     return `<button class="nav-item" data-device="cooler:${ctx.esc(c.id)}" aria-current="${ctx.state.selected === 'cooler:' + c.id}" title="${ctx.esc(c.vendor + ' ' + c.name)}">
@@ -50,6 +55,7 @@ function configOf(c) {
     takeover: c.takeover,
     speeds: Object.fromEntries(c.channels.map((ch) => [ch.id, ch.setting])),
     screen: c.screen ? c.screen.settings : undefined,
+    light: c.light || undefined,
   };
 }
 
@@ -81,15 +87,38 @@ export function renderHead(c) {
   </label>`;
 }
 
+/** What Lumora takes over on this cooler, in words. */
+const parts = (c) => (c.screen ? 'pump, fans and screen' : c.light ? 'pump, fans and lighting' : 'pump and fans');
+
 function askTakeover(c) {
   const app = c.owner_app || 'its own app';
-  $('#coolerDialogTitle').textContent = `Let Lumora run ${c.name}?`;
-  $('#coolerDialogText').textContent = c.owner_running
-    ? `${app} is running right now. Quit it from the system tray first (and turn off its "start with Windows" option), or the two apps will keep overriding each other.`
-    : `Lumora will run the pump, fans and screen. ${app} isn't running, so nothing will get in the way.`;
-  $('#coolerDialogKeep').textContent = 'Your cooler stores its curves, so it keeps following them even when Lumora is closed. You can hand it back any time.';
+  const go = $('#coolerDialogGo');
+  $('#coolerDialogTitle').textContent = c.needs_setup ? `Set up ${c.vendor} ${c.name}?` : `Let Lumora run ${c.name}?`;
+  const running = `${app} is running right now. Quit it from the system tray first (and turn off its "start with Windows" option), or the two apps will keep overriding each other.`;
+  if (c.needs_setup) {
+    $('#coolerDialogText').textContent = `Windows needs a small access driver (UsbDk) before Lumora can reach this cooler. It's installed once, after one Windows permission prompt, and it doesn't replace the cooler's own driver, so ${app} still works whenever Lumora isn't running the cooler.`;
+    $('#coolerDialogKeep').textContent = c.owner_running ? running : `Then Lumora runs the ${parts(c)}. You can hand it back any time.`;
+    go.textContent = 'Set up and run it';
+  } else {
+    $('#coolerDialogText').textContent = c.owner_running ? running : `Lumora will run the ${parts(c)}. ${app} isn't running, so nothing will get in the way.`;
+    $('#coolerDialogKeep').textContent = 'Your cooler stores its fan curves, so it keeps following them even when Lumora is closed. You can hand it back any time.';
+    go.textContent = 'Let Lumora run it';
+  }
+  go.disabled = false;
   $('#coolerDialog').showModal();
-  $('#coolerDialogGo').onclick = () => {
+  go.onclick = async () => {
+    if (c.needs_setup) {
+      go.disabled = true;
+      go.textContent = 'Setting up…';
+      try {
+        await ctx.api.invoke('setup_cooler_access');
+      } catch (err) {
+        go.disabled = false;
+        go.textContent = 'Try again';
+        return ctx.toast(String(err));
+      }
+      ctx.toast('Access driver installed. If the cooler doesn\'t connect within a minute, restart your PC once.');
+    }
     $('#coolerDialog').close();
     update(c, (x) => (x.takeover = true), { now: true });
   };
@@ -111,9 +140,20 @@ function readouts(c) {
       <span class="readout-value"><b>${fmt(s.liquid_c, 1)}</b><small>°C</small></span>
       <span class="readout-sub">${s.fault ? 'The cooler reports a fault. Check its SATA power cable.' : 'Your CPU heats the liquid; the radiator cools it.'}</span>
     </div>
-    ${stat('pump', 'Pump', fmt(s.pump_rpm), 'rpm', s.pump_duty != null ? `${s.pump_duty}% duty` : '')}
-    ${hasFan ? stat('fan', 'Radiator fans', fmt(s.fan_rpm), 'rpm', s.fan_duty != null ? `${s.fan_duty}% duty` : '') : ''}
+    ${stat('pump', 'Pump', fmt(s.pump_rpm), 'rpm', pumpSub(s))}
+    ${hasFan ? stat('fan', 'Radiator fans', fmt(s.fan_rpm), 'rpm', fanSub(s)) : ''}
   </div>`;
+}
+
+function pumpSub(s) {
+  if (s.pump_duty != null) return `${s.pump_duty}% duty`;
+  return PUMP_MODE_NAMES[s.pump_mode] || '';
+}
+
+function fanSub(s) {
+  if (s.fan_duty != null) return `${s.fan_duty}% duty`;
+  if (s.fan_rpms && s.fan_rpms.length > 1) return s.fan_rpms.map((r, i) => `Fan ${i + 1}: ${r}`).join(' · ');
+  return '';
 }
 
 function curvePath(table, w, h, pad) {
@@ -160,6 +200,13 @@ function curveSvg(c, ch) {
 function channelHtml(c, ch) {
   const mode = ch.setting.mode;
   const active = mode === 'preset' ? ch.setting.preset : mode;
+  if (ch.kind === 'modes') {
+    const seg = PRESETS.map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
+    return `<section class="cool-card">
+      <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
+      <p class="hint">This pump has three built-in speeds, and the cooler fine-tunes within each one by itself.</p>
+    </section>`;
+  }
   const seg = [...PRESETS, ['fixed', 'Fixed'], ['custom', 'Custom']]
     .map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
   const fixed = mode === 'fixed'
@@ -202,15 +249,58 @@ function screenHtml(c) {
   </section>`;
 }
 
+function lightHtml(c) {
+  if (!c.light) return '';
+  const l = c.light;
+  const modes = LIGHT_MODES.map(([v, t]) => `<button role="radio" data-light-mode="${v}" aria-checked="${l.mode === v}">${t}</button>`).join('');
+  const max = l.mode === 'static' ? 1 : 4;
+  const colors = l.colors.slice(0, max);
+  const swatches = colors.map((col, i) => `<label class="light-swatch" style="--c:${ctx.esc(col)}" title="Color ${i + 1}">
+      <input type="color" data-light-color="${i}" value="${ctx.esc(col)}" aria-label="Color ${i + 1}">
+      ${colors.length > 1 ? `<button type="button" class="light-remove" data-light-remove="${i}" aria-label="Remove color ${i + 1}">×</button>` : ''}
+    </label>`).join('');
+  const add = colors.length < max ? '<button type="button" class="light-add" data-light-add aria-label="Add a color">+</button>' : '';
+  const speeds = LIGHT_SPEEDS.map(([v, t]) => `<button role="radio" data-light-speed="${v}" aria-checked="${l.speed === v}">${t}</button>`).join('');
+  return `<section class="cool-card">
+    <header><h3>Pump lighting</h3></header>
+    <div class="control">
+      <div class="control-label"><span>Effect</span></div>
+      <div class="segmented" role="radiogroup" aria-label="Pump lighting effect">${modes}</div>
+    </div>
+    <div class="control">
+      <div class="control-label"><span>${max > 1 ? 'Colors' : 'Color'}</span>${max > 1 ? '<small>up to 4</small>' : ''}</div>
+      <div class="light-colors">${swatches}${add}</div>
+    </div>
+    ${l.mode === 'static' ? '' : `<div class="control">
+      <div class="control-label"><span>Speed</span></div>
+      <div class="segmented" role="radiogroup" aria-label="Pump lighting speed">${speeds}</div>
+    </div>`}
+    <p class="hint">The cooler runs this effect by itself, so it costs no CPU.</p>
+  </section>`;
+}
+
+function setupHtml(c) {
+  const app = c.owner_app || 'its own app';
+  return `<div class="cool-page"><div class="hands-off static">
+    <strong>One-time setup needed</strong>
+    <span>Windows needs a small access driver (UsbDk) before Lumora can reach this cooler. It doesn't replace the cooler's own driver, so ${ctx.esc(app)} still works whenever Lumora isn't running it.</span>
+    <button class="btn primary" data-takeover="on">Set up</button>
+  </div></div>`;
+}
+
 export function renderPage(c) {
   const body = $('#stageBody');
   if (!c.takeover) {
     const app = c.owner_app || 'its own app';
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
       <strong>${ctx.esc(app)} runs this cooler</strong>
-      <span>Lumora isn't touching it, so ${ctx.esc(app)} keeps the pump, fans and screen exactly as you set them. Let Lumora run it to see live temperatures and set your own curves here.</span>
+      <span>Lumora isn't touching it, so ${ctx.esc(app)} keeps the ${parts(c)} exactly as you set them. Let Lumora run it to see live temperatures and set your own curves here.</span>
       <button class="btn primary" data-takeover="on">Let Lumora run this cooler</button>
     </div></div>`;
+    return;
+  }
+  if (c.needs_setup) {
+    body.innerHTML = setupHtml(c);
     return;
   }
   const banner = c.state === 'error'
@@ -223,7 +313,7 @@ export function renderPage(c) {
     ${readouts(c)}
     <div class="cool-grid">
       <div class="cool-col">${c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
-      <div class="cool-col">${screenHtml(c)}</div>
+      <div class="cool-col">${screenHtml(c)}${lightHtml(c)}</div>
     </div>
   </div>`;
 }
@@ -239,8 +329,8 @@ export function refreshLive(c) {
     if (sub != null) el.querySelector('.readout-sub').textContent = sub;
   };
   set('liquid', fmt(s.liquid_c, 1));
-  set('pump', fmt(s.pump_rpm), s.pump_duty != null ? `${s.pump_duty}% duty` : '');
-  set('fan', fmt(s.fan_rpm), s.fan_duty != null ? `${s.fan_duty}% duty` : '');
+  set('pump', fmt(s.pump_rpm), pumpSub(s));
+  set('fan', fmt(s.fan_rpm), fanSub(s));
   if (!dragging) {
     for (const ch of c.channels) {
       const svg = document.querySelector(`svg[data-curve="${ch.id}"]`);
@@ -290,6 +380,30 @@ function onClick(ev) {
     update(c, (x) => (x.screen.settings.rotation = +rt.dataset.rotate), { now: true });
     return render();
   }
+  const lm = ev.target.closest('[data-light-mode]');
+  if (lm) {
+    update(c, (x) => {
+      x.light.mode = lm.dataset.lightMode;
+      if (x.light.mode !== 'static' && x.light.colors.length < 2) x.light.colors.push('#00d2ff');
+    }, { now: true });
+    return render();
+  }
+  const ls = ev.target.closest('[data-light-speed]');
+  if (ls) {
+    update(c, (x) => (x.light.speed = ls.dataset.lightSpeed), { now: true });
+    return render();
+  }
+  if (ev.target.closest('[data-light-add]')) {
+    const palette = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400'];
+    update(c, (x) => x.light.colors.push(palette.find((p) => !x.light.colors.includes(p)) || '#ffffff'), { now: true });
+    return render();
+  }
+  const rm = ev.target.closest('[data-light-remove]');
+  if (rm) {
+    ev.preventDefault();
+    update(c, (x) => x.light.colors.splice(+rm.dataset.lightRemove, 1), { now: true });
+    return render();
+  }
 }
 
 function onInput(ev) {
@@ -301,6 +415,9 @@ function onInput(ev) {
     t.style.setProperty('--p', `${t.value}%`);
     t.closest('.control').querySelector('output').textContent = `${t.value}%`;
     update(c, () => (ch.setting = { mode: 'fixed', duty: +t.value }));
+  } else if (t.dataset.lightColor != null) {
+    t.closest('.light-swatch').style.setProperty('--c', t.value);
+    update(c, (x) => (x.light.colors[+t.dataset.lightColor] = t.value));
   } else if (t.id === 'screenBrightness') {
     t.style.setProperty('--p', `${t.value}%`);
     $('#screenBrightnessOut').textContent = `${t.value}%`;

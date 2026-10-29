@@ -20,6 +20,18 @@ Signed driver installer, run only if you turn on RAM & motherboard lighting.
 
 - Project, license and source code: https://pawnio.eu and https://github.com/namazso/PawnIO.Setup
 
+## UsbDk
+
+Signed driver installer from Red Hat / Daynix, run only if you set up a Corsair Hydro Pro cooler (one Windows permission prompt). It lets Lumora reach the cooler without replacing its driver, so iCUE keeps working.
+
+- Project, license (Apache-2.0) and source code: https://github.com/daynix/UsbDk
+
+## libusb
+
+Built into Lumora for talking to USB coolers. LGPL-2.1-or-later. Lumora's complete source is public, so you can rebuild it against your own copy of libusb.
+
+- Project and source code: https://libusb.info and https://github.com/libusb/libusb
+
 ## Cooler protocol research
 
 Lumora's cooler drivers are its own code (MIT). The USB message layouts they use were learned from these open projects, whose authors documented the devices; no code was copied from them:

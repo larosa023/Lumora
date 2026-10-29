@@ -7,7 +7,7 @@ use std::time::Duration;
 use hidapi::{HidApi, HidDevice};
 
 use super::kraken::{self, NZXT_VID};
-use super::{Backend, FoundCooler, HidIo};
+use super::{Backend, FoundCooler, Link};
 
 pub struct HidBackend {
     api: Option<HidApi>,
@@ -27,7 +27,7 @@ impl Default for HidBackend {
 
 struct Device(HidDevice);
 
-impl HidIo for Device {
+impl Link for Device {
     fn write(&mut self, report: &[u8]) -> io::Result<()> {
         self.0.write(report).map(|_| ()).map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e.to_string()))
     }
@@ -54,12 +54,12 @@ impl Backend for HidBackend {
                 let serial = d.serial_number().unwrap_or("").to_string();
                 let id = format!("hid:{:04x}:{:04x}:{}", d.vendor_id(), d.product_id(), serial);
                 // Composite devices list one entry per interface.
-                seen.insert(id.clone()).then(|| FoundCooler { id, vid: d.vendor_id(), pid: d.product_id(), serial })
+                seen.insert(id.clone()).then(|| FoundCooler { id, vid: d.vendor_id(), pid: d.product_id(), serial, needs_setup: false })
             })
             .collect()
     }
 
-    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn HidIo>> {
+    fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
         let api = self.api.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "HID isn't available"))?;
         let info = api
             .device_list()

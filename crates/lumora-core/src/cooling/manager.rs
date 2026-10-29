@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::curve::{self, SpeedSetting};
-use super::kraken::{self, Kraken, KrakenModel, PUMP_MIN_DUTY};
-use super::{owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, ScreenMode, ScreenSettings};
+use super::family::{ChannelKind, Driver, Model};
+use super::{owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightSettings, ScreenSettings};
 use crate::temps;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -19,6 +19,8 @@ use crate::temps;
 pub enum CoolerState {
     /// Left to its own app.
     Idle,
+    /// Lumora needs a one-time setup before it can reach this cooler.
+    NeedsSetup,
     Connecting,
     Active,
     Error,
@@ -29,6 +31,7 @@ pub struct ChannelView {
     pub id: String,
     pub name: String,
     pub min_duty: u8,
+    pub kind: ChannelKind,
     pub setting: SpeedSetting,
     /// The 20..=59 °C duty table that is (or will be) on the cooler.
     pub table: Vec<u8>,
@@ -57,19 +60,25 @@ pub struct CoolerView {
     pub status: Option<CoolerStatus>,
     pub channels: Vec<ChannelView>,
     pub screen: Option<ScreenView>,
+    /// Lighting the cooler runs itself, if it has any.
+    pub light: Option<LightSettings>,
+    /// Lumora can't reach this cooler until a one-time setup.
+    pub needs_setup: bool,
 }
 
 /// What was last written to a cooler, so unchanged settings aren't resent.
 #[derive(Clone, PartialEq, Default)]
 struct Applied {
-    tables: BTreeMap<String, [u8; 40]>,
+    speeds: BTreeMap<String, SpeedSetting>,
     screen: Option<ScreenSettings>,
+    light: Option<LightSettings>,
 }
 
 struct Runtime {
     found: FoundCooler,
-    model: &'static KrakenModel,
-    kraken: Option<Kraken>,
+    model: Model,
+    driver: Option<Box<dyn Driver>>,
+    firmware: Option<String>,
     state: CoolerState,
     message: String,
     status: Option<CoolerStatus>,
@@ -113,14 +122,6 @@ const OWNER_CHECK_EVERY: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// Curves are written whole; spacing writes out keeps the firmware happy.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(800);
-
-fn channels(model: &KrakenModel) -> Vec<(&'static str, &'static str, u8)> {
-    let mut v = vec![("pump", "Pump", PUMP_MIN_DUTY)];
-    if model.fan_id.is_some() {
-        v.push(("fan", "Radiator fans", 0));
-    }
-    v
-}
 
 /// The process names each owner app runs as.
 fn owner_processes(app: &str) -> &'static [&'static str] {
@@ -176,15 +177,17 @@ impl Drop for CoolingManager {
     }
 }
 
-fn desired(model: &KrakenModel, cfg: &CoolerConfig) -> Applied {
-    let tables = channels(model)
+fn desired(model: &Model, cfg: &CoolerConfig) -> Applied {
+    let speeds = model
+        .channels()
         .into_iter()
-        .map(|(id, _, min)| {
-            let setting = cfg.speeds.get(id).cloned().unwrap_or_default();
-            (id.to_string(), curve::table(&setting, id, min))
-        })
+        .map(|ch| (ch.id.to_string(), cfg.speeds.get(ch.id).cloned().unwrap_or_default()))
         .collect();
-    Applied { tables, screen: model.lcd.map(|_| cfg.screen.clone()) }
+    Applied {
+        speeds,
+        screen: model.screen().map(|_| cfg.screen.clone()),
+        light: model.light().then(|| cfg.light.clone()),
+    }
 }
 
 fn views(inner: &Inner) -> Vec<CoolerView> {
@@ -194,11 +197,10 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
         .map(|r| {
             let cfg = inner.configs.get(&r.found.id).cloned().unwrap_or_default();
             let owner = owner_app(r.found.vid);
-            let want = desired(r.model, &cfg);
             CoolerView {
                 id: r.found.id.clone(),
-                name: r.model.name.to_string(),
-                vendor: "NZXT".into(),
+                name: r.model.name().to_string(),
+                vendor: r.model.vendor().into(),
                 owner_app: owner.map(String::from),
                 owner_running: owner.is_some_and(|a| {
                     owner_processes(a).iter().any(|p| inner.running_apps.contains(*p))
@@ -206,19 +208,27 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 takeover: cfg.takeover,
                 state: r.state,
                 message: r.message.clone(),
-                firmware: r.kraken.as_ref().and_then(|k| k.firmware).map(|(a, b, c)| format!("{a}.{b}.{c}")),
+                firmware: r.firmware.clone(),
                 status: r.status.clone(),
-                channels: channels(r.model)
+                channels: r
+                    .model
+                    .channels()
                     .into_iter()
-                    .map(|(id, name, min)| ChannelView {
-                        id: id.into(),
-                        name: name.into(),
-                        min_duty: min,
-                        setting: cfg.speeds.get(id).cloned().unwrap_or_default(),
-                        table: want.tables[id].to_vec(),
+                    .map(|ch| {
+                        let setting = cfg.speeds.get(ch.id).cloned().unwrap_or_default();
+                        ChannelView {
+                            id: ch.id.into(),
+                            name: ch.name.into(),
+                            min_duty: ch.min_duty,
+                            kind: ch.kind,
+                            table: curve::table(&setting, ch.id, ch.min_duty).to_vec(),
+                            setting,
+                        }
                     })
                     .collect(),
-                screen: r.model.lcd.map(|(w, h)| ScreenView { width: w, height: h, settings: cfg.screen.clone() }),
+                screen: r.model.screen().map(|(w, h)| ScreenView { width: w, height: h, settings: cfg.screen.clone() }),
+                light: r.model.light().then(|| cfg.light.clone()),
+                needs_setup: r.found.needs_setup,
             }
         })
         .collect()
@@ -227,19 +237,26 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
 /// Brings one taken-over cooler in line with its settings and reads it.
 fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     let now = Instant::now();
-    if r.kraken.is_none() {
+    if r.found.needs_setup {
+        r.state = CoolerState::NeedsSetup;
+        r.message = "Lumora needs a one-time setup before it can reach this cooler.".into();
+        return;
+    }
+    if r.driver.is_none() {
         if now < r.retry_at {
             return;
         }
         r.state = CoolerState::Connecting;
-        let opened = backend.open(&r.found).and_then(|io| {
-            let mut k = Kraken::new(io, r.model);
-            k.initialize()?;
-            Ok(k)
+        let model = r.model;
+        let opened = backend.open(&r.found).and_then(|link| {
+            let mut d = model.driver(link);
+            d.initialize()?;
+            Ok(d)
         });
         match opened {
-            Ok(k) => {
-                r.kraken = Some(k);
+            Ok(d) => {
+                r.firmware = d.firmware();
+                r.driver = Some(d);
                 r.applied = Applied::default();
                 r.state = CoolerState::Active;
                 r.message.clear();
@@ -256,32 +273,32 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
         }
     }
 
-    let want = desired(r.model, cfg);
-    let k = r.kraken.as_mut().expect("opened above");
+    let want = desired(&r.model, cfg);
+    let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
         if r.applied != want && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
             // One change per pass: firmware dislikes bursts of curve writes.
-            if let Some((ch, table)) = want.tables.iter().find(|(ch, t)| r.applied.tables.get(*ch) != Some(t)) {
-                k.set_curve(ch, table)?;
-                r.applied.tables.insert(ch.clone(), *table);
+            if let Some((ch, setting)) = want.speeds.iter().find(|(ch, s)| r.applied.speeds.get(*ch) != Some(s)) {
+                d.set_speed(ch, setting)?;
+                r.applied.speeds.insert(ch.clone(), setting.clone());
             } else if want.screen != r.applied.screen {
                 if let Some(s) = &want.screen {
-                    if s.mode != ScreenMode::Unchanged {
-                        k.set_screen(s.brightness, s.rotation)?;
-                        if s.mode == ScreenMode::Liquid {
-                            k.show_liquid_temperature()?;
-                        }
-                    }
+                    d.set_screen(s)?;
                 }
                 r.applied.screen = want.screen.clone();
+            } else if want.light != r.applied.light {
+                if let Some(l) = &want.light {
+                    d.set_light(l)?;
+                }
+                r.applied.light = want.light.clone();
             }
             r.last_write = Instant::now();
         }
-        r.status = Some(k.status()?);
+        r.status = Some(d.status()?);
         Ok(())
     })();
     if let Err(e) = result {
-        r.kraken = None;
+        r.driver = None;
         r.status = None;
         r.state = CoolerState::Error;
         r.message = format!("Lost the connection to the cooler ({e}). Retrying…");
@@ -307,14 +324,22 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
             let mut inner = shared.lock();
             inner.coolers.retain(|r| found.iter().any(|f| f.id == r.found.id));
             for f in found {
-                if inner.coolers.iter().any(|r| r.found.id == f.id) {
+                if let Some(r) = inner.coolers.iter_mut().find(|r| r.found.id == f.id) {
+                    // Setup may have finished since the last look.
+                    if r.found.needs_setup && !f.needs_setup {
+                        r.found.needs_setup = false;
+                        r.state = CoolerState::Idle;
+                        r.message.clear();
+                        r.retry_at = now;
+                    }
                     continue;
                 }
-                if let Some(model) = kraken::model(f.pid) {
+                if let Some(model) = Model::find(f.vid, f.pid) {
                     inner.coolers.push(Runtime {
                         found: f,
                         model,
-                        kraken: None,
+                        driver: None,
+                        firmware: None,
                         state: CoolerState::Idle,
                         message: String::new(),
                         status: None,
@@ -350,7 +375,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                 service(&mut runtime, &cfg, backend.as_mut());
             } else {
                 // Hand it back: close our handle, keep the last curve on the device.
-                runtime.kraken = None;
+                runtime.driver = None;
                 runtime.status = None;
                 runtime.state = CoolerState::Idle;
                 runtime.message.clear();
@@ -388,7 +413,8 @@ impl Runtime {
         Runtime {
             found: self.found.clone(),
             model: self.model,
-            kraken: None,
+            driver: None,
+            firmware: self.firmware.clone(),
             state: self.state,
             message: self.message.clone(),
             status: self.status.clone(),
@@ -403,6 +429,8 @@ impl Runtime {
 mod tests {
     use super::super::curve::Preset;
     use super::super::fake::FakeBackend;
+    use super::super::kraken::PUMP_MIN_DUTY;
+    use super::super::{LightMode, LightSpeed};
     use super::*;
 
     fn wait(what: &str, mut f: impl FnMut() -> bool) {
@@ -504,5 +532,61 @@ mod tests {
         assert!(m.views()[0].message.contains("Another app"));
         dev.lock().unwrap().busy = false;
         wait("recovered", || m.views()[0].state == CoolerState::Active);
+    }
+
+    #[test]
+    fn corsair_hydro_takeover_sets_modes_curves_and_light() {
+        let (backend, dev) = FakeBackend::with_hydro(0x0C13);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let v = m.views()[0].clone();
+        assert_eq!((v.vendor.as_str(), v.name.as_str()), ("Corsair", "H115i Pro"));
+        assert_eq!(v.owner_app.as_deref(), Some("Corsair iCUE"));
+        assert_eq!(v.channels[0].kind, ChannelKind::Modes);
+        assert!(v.light.is_some() && v.screen.is_none());
+        thread::sleep(Duration::from_millis(1200));
+        assert_eq!(dev.lock().unwrap().writes, 0, "left to iCUE until taken over");
+
+        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        cfg.speeds.insert("pump".into(), SpeedSetting::Preset { preset: Preset::Performance });
+        cfg.speeds.insert("fan".into(), SpeedSetting::Custom { points: vec![(25, 20), (40, 60)] });
+        cfg.light = LightSettings { mode: LightMode::Pulse, colors: vec!["#ff0000".into(), "#0000ff".into()], speed: LightSpeed::Slower };
+        m.set_config(&v.id, cfg.clone());
+        wait("everything applied", || {
+            let d = dev.lock().unwrap();
+            d.pump_mode == 2 && d.fan_curves.len() >= 2 && d.light.len() >= 3
+        });
+        wait("status", || m.views()[0].status.as_ref().is_some_and(|s| s.pump_mode.as_deref() == Some("performance")));
+        let v = m.views()[0].clone();
+        let s = v.status.unwrap();
+        assert_eq!(v.firmware.as_deref(), Some("1.1.15.4"));
+        assert!((s.liquid_c.unwrap() - 31.7).abs() < 0.01);
+        assert_eq!(s.fan_rpms, vec![900, 920]);
+        {
+            let d = dev.lock().unwrap();
+            let (fan, curve) = &d.fan_curves[0];
+            assert_eq!(*fan, 0);
+            assert_eq!(&curve[..3], &[25, 40, 59]);
+            assert_eq!(&curve[7..10], &[20, 60, 100]);
+            assert_eq!(d.light.last().unwrap(), &vec![0x52, 0x01]);
+        }
+
+        cfg.speeds.insert("fan".into(), SpeedSetting::Fixed { duty: 55 });
+        m.set_config(&v.id, cfg);
+        wait("fixed fans", || dev.lock().unwrap().fan_fixed.len() >= 2);
+        assert_eq!(dev.lock().unwrap().fan_fixed[..2], [(0, 55), (1, 55)]);
+    }
+
+    #[test]
+    fn corsair_without_access_driver_waits_for_setup() {
+        let (backend, dev) = FakeBackend::with_hydro(0x0C13);
+        dev.lock().unwrap().needs_setup = true;
+        let mut configs = BTreeMap::new();
+        configs.insert("usb:1b1c:0c13:1-4".to_string(), CoolerConfig { takeover: true, ..Default::default() });
+        let m = manager(backend, configs, &[]);
+        wait("needs setup", || m.views().first().is_some_and(|v| v.state == CoolerState::NeedsSetup && v.needs_setup));
+        assert_eq!(dev.lock().unwrap().writes, 0);
+        dev.lock().unwrap().needs_setup = false;
+        wait("active after setup", || m.views()[0].state == CoolerState::Active);
     }
 }

@@ -25,7 +25,7 @@ const EFFECTS = [
   { ...fx('temperature', 'Temperature', 'Colors follow your liquid or GPU temperature', 'Live', [2, 6], false, null, false, ['#00a2ff', '#00ffa3', '#ffd400', '#ff2d2d']), uses_temperature: true },
 ];
 
-// --- A pretend Kraken for the cooling page ------------------------------------------
+// --- A pretend Kraken and Corsair H115i Pro for the cooling page ------------------------------------------
 const PRESET_POINTS = {
   pump: { silent: [[20, 50], [35, 60], [45, 80], [50, 100]], balanced: [[20, 60], [35, 70], [45, 90], [50, 100]], performance: [[20, 80], [30, 90], [40, 100]] },
   fan: { silent: [[20, 25], [30, 30], [36, 45], [42, 70], [48, 100]], balanced: [[20, 30], [30, 40], [36, 60], [42, 85], [48, 100]], performance: [[20, 50], [30, 65], [36, 85], [40, 100]] },
@@ -39,12 +39,25 @@ const kraken = {
   id: 'hid:1e71:300c:DEMO', name: 'Kraken Elite (2023)', vendor: 'NZXT', owner_app: 'NZXT CAM', owner_running: false,
   takeover: location.search.includes('cooler'), state: 'idle', message: '', firmware: '2.4.0', status: null,
   channels: [
-    { id: 'pump', name: 'Pump', min_duty: 20, setting: { mode: 'preset', preset: 'balanced' } },
-    { id: 'fan', name: 'Radiator fans', min_duty: 0, setting: { mode: 'preset', preset: 'balanced' } },
+    { id: 'pump', name: 'Pump', min_duty: 20, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
+    { id: 'fan', name: 'Radiator fans', min_duty: 0, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
   ],
   screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0 } },
+  light: null, needs_setup: false,
 };
-kraken.channels.forEach((c) => (c.table = tableFor(c.id, c.setting)));
+// `?corsair-setup` shows the one-time setup step.
+const hydro = {
+  id: 'usb:1b1c:0c13:0', name: 'H115i Pro', vendor: 'Corsair', owner_app: 'Corsair iCUE', owner_running: false,
+  takeover: location.search.includes('corsair'), state: 'idle', message: '', firmware: '1.1.15.4', status: null,
+  channels: [
+    { id: 'pump', name: 'Pump', min_duty: 0, kind: 'modes', setting: { mode: 'preset', preset: 'balanced' } },
+    { id: 'fan', name: 'Radiator fans', min_duty: 0, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
+  ],
+  screen: null,
+  light: { mode: 'static', colors: ['#7c5cff', '#00d2ff'], speed: 'normal' },
+  needs_setup: location.search.includes('corsair-setup'),
+};
+[kraken, hydro].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting))));
 let liquid = 33.2;
 
 function linear(zones) {
@@ -105,7 +118,7 @@ const state = {
     preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
   ],
   active_profile: null,
-  coolers: [kraken],
+  coolers: [kraken, hydro],
   temps: [],
   launch_at_login: false,
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
@@ -158,12 +171,21 @@ setInterval(() => {
   liquid = Math.max(29, Math.min(44, liquid));
   const k = state.coolers[0];
   k.state = k.takeover ? 'active' : 'idle';
+  const at = (ch) => ch.table[Math.max(0, Math.min(39, Math.round(liquid) - 20))];
   if (k.takeover) {
-    const at = (ch) => ch.table[Math.max(0, Math.min(39, Math.round(liquid) - 20))];
     const [pump, fan] = k.channels;
     k.status = { liquid_c: Math.round(liquid * 10) / 10, pump_duty: at(pump), pump_rpm: 1000 + at(pump) * 18, fan_duty: at(fan), fan_rpm: at(fan) * 18, fault: false };
   } else {
     k.status = null;
+  }
+  const h = state.coolers[1];
+  h.state = !h.takeover ? 'idle' : h.needs_setup ? 'needs_setup' : 'active';
+  if (h.state === 'active') {
+    const modes = { silent: 'quiet', balanced: 'balanced', performance: 'performance' };
+    const fan = at(h.channels[1]) * 20;
+    h.status = { liquid_c: Math.round((liquid - 1.6) * 10) / 10, pump_rpm: 2350, pump_duty: null, pump_mode: modes[h.channels[0].setting.preset] || 'balanced', fan_rpm: fan + 10, fan_duty: null, fan_rpms: [fan, fan + 20], fault: false };
+  } else {
+    h.status = null;
   }
   state.temps = [
     ...(k.takeover ? [{ source: 'liquid', celsius: k.status.liquid_c }] : []),
@@ -194,8 +216,13 @@ const commands = {
       if (config.speeds[ch.id]) ch.setting = config.speeds[ch.id];
       ch.table = tableFor(ch.id, ch.setting);
     }
-    if (config.screen) k.screen.settings = config.screen;
+    if (config.screen && k.screen) k.screen.settings = config.screen;
+    if (config.light && k.light) k.light = config.light;
     return structuredClone(state.coolers);
+  },
+  setup_cooler_access: async () => {
+    await new Promise((r) => setTimeout(r, 900));
+    state.coolers.forEach((c) => (c.needs_setup = false));
   },
   diagnostic_report: () => 'Lumora preview\n(no hardware in the browser preview)',
   set_device_control: ({ device, on }) => {

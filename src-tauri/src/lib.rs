@@ -107,6 +107,14 @@ async fn enable_full_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<Engin
         .map_err(|e| e.to_string())?
 }
 
+/// One-time setup so Lumora can reach coolers that need an access driver
+/// (Corsair Hydro Pro on Windows). One Windows permission prompt.
+#[tauri::command]
+async fn setup_cooler_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<()> {
+    let h = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || h.install_cooler_driver()).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn disable_full_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<EngineStatus> {
     let h = host.inner().clone();
@@ -574,10 +582,18 @@ pub fn run() {
             app.manage(host);
 
             let cooler_events = handle.clone();
-            let backend: Box<dyn lumora_core::cooling::Backend> = if std::env::var_os("LUMORA_FAKE_COOLER").is_some() {
-                Box::new(lumora_core::cooling::fake::FakeBackend::with_kraken(0x300C).0)
-            } else {
-                Box::new(lumora_core::cooling::hid::HidBackend::new())
+            let backend: Box<dyn lumora_core::cooling::Backend> = match std::env::var("LUMORA_FAKE_COOLER") {
+                // Pretend hardware for trying the cooling page: a Kraken Elite and
+                // an H115i Pro (`setup` makes the Corsair need its one-time setup).
+                Ok(v) => {
+                    let fake = lumora_core::cooling::fake::FakeBackend::with_kraken(0x300C).0;
+                    fake.add_hydro(0x0C13).lock().unwrap().needs_setup = v == "setup";
+                    Box::new(fake)
+                }
+                Err(_) => Box::new(lumora_core::cooling::MultiBackend::new(vec![
+                    Box::new(lumora_core::cooling::hid::HidBackend::new()),
+                    Box::new(lumora_core::cooling::usb::UsbBackend::new()),
+                ])),
             };
             let cooling = CoolingManager::new(
                 backend,
@@ -641,6 +657,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            setup_cooler_access,
             get_snapshot,
             set_effect,
             clear_override,

@@ -7,7 +7,9 @@
 use std::io;
 use std::time::Duration;
 
-use super::{CoolerStatus, HidIo};
+use super::curve::{self, SpeedSetting};
+use super::family::Driver;
+use super::{CoolerStatus, Link, ScreenMode, ScreenSettings};
 
 pub const NZXT_VID: u16 = 0x1E71;
 const REPORT_LEN: usize = 64;
@@ -40,7 +42,7 @@ pub fn model(pid: u16) -> Option<&'static KrakenModel> {
 pub const PUMP_MIN_DUTY: u8 = 20;
 
 pub struct Kraken {
-    io: Box<dyn HidIo>,
+    io: Box<dyn Link>,
     pub model: &'static KrakenModel,
     pub firmware: Option<(u8, u8, u8)>,
     pub brightness: u8,
@@ -53,7 +55,7 @@ fn err(msg: impl Into<String>) -> io::Error {
 }
 
 impl Kraken {
-    pub fn new(io: Box<dyn HidIo>, model: &'static KrakenModel) -> Self {
+    pub fn new(io: Box<dyn Link>, model: &'static KrakenModel) -> Self {
         Kraken { io, model, firmware: None, brightness: 50, orientation: 0 }
     }
 
@@ -140,6 +142,7 @@ impl Kraken {
             fan_rpm: has_fan.then(|| u16::from_le_bytes([m[23], m[24]]) as u32),
             fan_duty: has_fan.then_some(m[25]),
             fault,
+            ..Default::default()
         })
     }
 
@@ -170,5 +173,36 @@ impl Kraken {
         self.write(&[0x38, 0x01, 0x02, 0x00])?;
         let reply = self.read_reply()?;
         Ok(reply.get(14) == Some(&1))
+    }
+}
+
+impl Driver for Kraken {
+    fn initialize(&mut self) -> io::Result<()> {
+        Kraken::initialize(self)
+    }
+
+    fn firmware(&self) -> Option<String> {
+        self.firmware.map(|(a, b, c)| format!("{a}.{b}.{c}"))
+    }
+
+    fn status(&mut self) -> io::Result<CoolerStatus> {
+        Kraken::status(self)
+    }
+
+    fn set_speed(&mut self, channel: &str, setting: &SpeedSetting) -> io::Result<()> {
+        let min = if channel == "pump" { PUMP_MIN_DUTY } else { 0 };
+        let table = curve::table(setting, channel, min);
+        self.set_curve(channel, &table)
+    }
+
+    fn set_screen(&mut self, s: &ScreenSettings) -> io::Result<()> {
+        if s.mode == ScreenMode::Unchanged {
+            return Ok(());
+        }
+        Kraken::set_screen(self, s.brightness, s.rotation)?;
+        if s.mode == ScreenMode::Liquid {
+            self.show_liquid_temperature()?;
+        }
+        Ok(())
     }
 }
