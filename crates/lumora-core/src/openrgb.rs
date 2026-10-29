@@ -155,7 +155,7 @@ impl Client {
             0,
             packet::REQUEST_PROTOCOL_VERSION,
             &CLIENT_PROTOCOL.to_le_bytes(),
-            Duration::from_millis(1500),
+            Duration::from_secs(6),
         ) {
             Ok(data) if data.len() >= 4 => {
                 u32::from_le_bytes([data[0], data[1], data[2], data[3]]).min(CLIENT_PROTOCOL)
