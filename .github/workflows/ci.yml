@@ -50,7 +50,8 @@ jobs:
         run: |
           curl -fsSL -o OpenRGB.AppImage https://codeberg.org/OpenRGB/OpenRGB/releases/download/release_1.1/OpenRGB_1.1_x86_64_8e16de2.AppImage
           chmod +x OpenRGB.AppImage && ./OpenRGB.AppImage --appimage-extract > /dev/null
-          QT_QPA_PLATFORM=offscreen ./squashfs-root/AppRun --server --server-host 127.0.0.1 --server-port 6742 --config "$RUNNER_TEMP/orgb" > openrgb.log 2>&1 &
+          mkdir -p "$RUNNER_TEMP/orgb"
+          QT_QPA_PLATFORM=offscreen ./squashfs-root/AppRun --server --server-host 127.0.0.1 --server-port 6742 --noautoconnect --config "$RUNNER_TEMP/orgb" > openrgb.log 2>&1 &
       - name: Lumora's client connects
         run: cargo run -p lumora-core --example probe
       - name: OpenRGB log

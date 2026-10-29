@@ -116,6 +116,7 @@ fn server_args(config: &Path) -> Vec<String> {
         "127.0.0.1".into(),
         "--server-port".into(),
         PORT.to_string(),
+        "--noautoconnect".into(),
         "--config".into(),
         config.display().to_string(),
     ]
@@ -529,7 +530,7 @@ mod tests {
         let xml = task_xml(r"PC\Someone", Path::new(r"C:\Program Files\Lumora Engine\openrgb\OpenRGB.exe"), &server_args(Path::new(r"C:\ProgramData\Lumora\openrgb")));
         assert!(xml.contains("<RunLevel>HighestAvailable</RunLevel>"));
         assert!(xml.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
-        assert!(xml.contains("--server-host 127.0.0.1 --server-port 6742 --config"));
+        assert!(xml.contains("--server-host 127.0.0.1 --server-port 6742 --noautoconnect --config"));
         assert!(xml.contains("<UserId>PC\\Someone</UserId>"));
         let bytes = utf16_with_bom(&xml);
         assert_eq!(&bytes[..2], &[0xFF, 0xFE]);
