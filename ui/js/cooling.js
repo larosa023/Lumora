@@ -378,9 +378,9 @@ function screenHtml(c) {
         ${overlayToggle}${s.overlay ? readingsHtml(s) : ''}`
       : '';
   const note = s.mode === 'temperature'
-    ? 'Lumora draws this in your colors and redraws it when a number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
+    ? 'Lumora draws this in your colors and redraws it when a number changes (at most every 5 seconds). When Lumora closes, the screen goes back to the built-in display.'
     : (s.mode === 'image' || s.mode === 'color') && s.overlay
-      ? 'Lumora redraws it when a number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
+      ? 'Lumora redraws it when a number changes (at most every 5 seconds). When Lumora closes, the screen goes back to the built-in display.'
     : s.mode === 'image' || s.mode === 'color'
     ? 'It stays on the screen even with Lumora closed. Still pictures for now; animated GIFs are coming.'
     : s.mode === 'liquid' ? 'The cooler draws this itself, live, even with Lumora closed. Its text can\'t be recolored; every other option can.' : 'Lumora leaves the screen showing whatever is on it.';

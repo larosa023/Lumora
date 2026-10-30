@@ -1,7 +1,7 @@
 {
   "name": "lumora",
   "private": true,
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "One lightweight app for all your RGB",
   "scripts": {
     "dev": "tauri dev",

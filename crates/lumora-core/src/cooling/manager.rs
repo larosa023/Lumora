@@ -130,7 +130,7 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// Curves are written whole; spacing writes out keeps the firmware happy.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(800);
 /// Lumora's own temperature screen is redrawn at most this often.
-const LIVE_SCREEN_EVERY: Duration = Duration::from_secs(10);
+const LIVE_SCREEN_EVERY: Duration = if cfg!(test) { Duration::from_millis(1500) } else { Duration::from_secs(5) };
 /// The shown number only changes when the reading moves this far from it,
 /// so a reading sitting on x.5 doesn't flip back and forth.
 const LIVE_HYSTERESIS: f32 = 0.7;
@@ -343,7 +343,8 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     let live_due = live.as_ref().is_some_and(|v| *v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY);
     let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
-        if r.applied != want && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
+        // Settings to apply, or the readings on the screen have moved on.
+        if (r.applied != want || live_due) && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
             // One change per pass: firmware dislikes bursts of curve writes.
             if let Some((ch, setting)) = want.speeds.iter().find(|(ch, s)| r.applied.speeds.get(*ch) != Some(s)) {
                 d.set_speed(ch, setting)?;
@@ -788,5 +789,29 @@ mod tests {
         m.shutdown();
         let d = dev.lock().unwrap();
         assert!(d.liquid_screen && d.shown_bucket.is_none(), "back to the built-in screen");
+    }
+
+    #[test]
+    fn temperature_screen_follows_the_reading() {
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        cfg.screen.mode = ScreenMode::Temperature;
+        m.set_config(&id, cfg);
+        wait("first drawing", || dev.lock().unwrap().shown_bucket.is_some());
+        let first = dev.lock().unwrap().bulk.clone();
+        // Nothing changed in the settings; only the liquid warms up.
+        dev.lock().unwrap().liquid_c = 41.0;
+        wait("redrawn with the new reading", || {
+            let d = dev.lock().unwrap();
+            d.writing.is_none() && d.bulk.len() == first.len() && d.bulk != first
+        });
+        // A reading that doesn't change the shown number causes no redraws.
+        let writes = dev.lock().unwrap().bulk_writes;
+        dev.lock().unwrap().liquid_c = 41.2;
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(dev.lock().unwrap().bulk_writes, writes);
     }
 }
