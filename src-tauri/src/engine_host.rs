@@ -360,6 +360,19 @@ fn usbdk_installed() -> bool {
     lumora_core::system::service_exists("UsbDk")
 }
 
+/// `\\?\C:\x` → `C:\x` and `\\?\UNC\server\x` → `\\server\x`, for tools
+/// that don't understand the long form.
+fn plain_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
+    }
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
 }
@@ -626,13 +639,19 @@ fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
         if !msi.is_file() {
             Err("The UsbDk driver installer is missing from this copy of Lumora".to_string())
         } else {
-            let msi = msi.display().to_string();
-            let log = std::env::temp_dir().join("lumora-usbdk-install.log");
+            // Windows Installer can't open packages by the long `\\?\C:\...`
+            // paths apps are often given for their own folder (error 1619),
+            // so it runs from a plain copy in the temp folder.
+            let copy = plain_path(&std::env::temp_dir()).join("lumora-usbdk.msi");
+            std::fs::copy(&msi, &copy).map_err(|e| format!("Couldn't prepare the UsbDk installer: {e}"))?;
+            let msi = copy.display().to_string();
+            let log = plain_path(&std::env::temp_dir()).join("lumora-usbdk-install.log");
             let log_arg = log.display().to_string();
             let code = hidden(Command::new("msiexec").args(["/i", msi.as_str(), "/qn", "/norestart", "/l*v", log_arg.as_str()]))
                 .status()
                 .ok()
                 .and_then(|s| s.code());
+            let _ = std::fs::remove_file(&copy);
             // 3010 and 1641: installed, a restart finishes the job.
             if matches!(code, Some(0 | 3010 | 1641)) || usbdk_installed() {
                 Ok(())
@@ -726,5 +745,12 @@ mod tests {
         assert_eq!(v["Detectors"]["detectors"]["ENE SMBus DRAM"], true);
         assert_eq!(v["Theme"]["theme"], "dark");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_paths_drop_the_long_prefix() {
+        assert_eq!(super::plain_path(Path::new(r"\\?\C:\Users\a\engine")), PathBuf::from(r"C:\Users\a\engine"));
+        assert_eq!(super::plain_path(Path::new(r"\\?\UNC\srv\share\x")), PathBuf::from(r"\\srv\share\x"));
+        assert_eq!(super::plain_path(Path::new(r"C:\plain")), PathBuf::from(r"C:\plain"));
     }
 }
