@@ -16,6 +16,15 @@ pub struct Process {
     pub name: String,
 }
 
+/// A Windows service's (or kernel driver's) state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServiceState {
+    pub running: bool,
+    /// Why it stopped, as a Windows error code (0 when none). 1275 means
+    /// Windows blocked the driver; 577 means its signature was rejected.
+    pub exit_code: u32,
+}
+
 /// Names of running processes, lowercased.
 pub fn running_process_names() -> HashSet<String> {
     processes().into_iter().map(|p| p.name).collect()
@@ -106,6 +115,28 @@ mod imp {
         }
     }
 
+    pub fn service_state(name: &str) -> Option<super::ServiceState> {
+        use windows_sys::Win32::System::Services::{QueryServiceStatus, SERVICE_RUNNING, SERVICE_STATUS};
+        unsafe {
+            let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+            if scm.is_null() {
+                return None;
+            }
+            let wname = wide(std::ffi::OsStr::new(name));
+            let svc = OpenServiceW(scm, wname.as_ptr(), SERVICE_QUERY_STATUS);
+            let mut out = None;
+            if !svc.is_null() {
+                let mut st: SERVICE_STATUS = std::mem::zeroed();
+                if QueryServiceStatus(svc, &mut st) != 0 {
+                    out = Some(super::ServiceState { running: st.dwCurrentState == SERVICE_RUNNING, exit_code: st.dwWin32ExitCode });
+                }
+                CloseServiceHandle(svc);
+            }
+            CloseServiceHandle(scm);
+            out
+        }
+    }
+
     pub fn service_exists(name: &str) -> bool {
         unsafe {
             let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
@@ -181,6 +212,10 @@ mod imp {
         false
     }
 
+    pub fn service_state(_name: &str) -> Option<super::ServiceState> {
+        None
+    }
+
     pub fn run_as_admin(_exe: &Path, _args: &str) -> Result<u32, super::ElevateError> {
         Err(super::ElevateError::Failed(0))
     }
@@ -207,6 +242,11 @@ pub fn process_path(pid: u32) -> Option<PathBuf> {
 /// Ends a process. Returns whether it worked.
 pub fn kill(pid: u32) -> bool {
     imp::kill(pid)
+}
+
+/// A service's state, or `None` when it isn't installed.
+pub fn service_state(name: &str) -> Option<ServiceState> {
+    imp::service_state(name)
 }
 
 /// A Windows service with this name is installed.

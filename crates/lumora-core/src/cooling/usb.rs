@@ -59,6 +59,27 @@ fn access_context() -> Option<Context> {
     }
 }
 
+/// Why UsbDk can't see devices, when it's more than a pending restart.
+fn usbdk_problem() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let st = crate::system::service_state("UsbDk")?;
+    if st.running {
+        return Some(
+            "The UsbDk access driver is running but can't reach this cooler. Please send the troubleshooting report from Settings.".into(),
+        );
+    }
+    Some(match st.exit_code {
+        1275 | 577 => format!(
+            "Windows blocked the UsbDk access driver from starting (error {}). On Windows 11 this is usually Memory integrity: Windows Security → Device security → Core isolation details lists it under incompatible drivers.",
+            st.exit_code
+        ),
+        0 => "Windows installed the UsbDk access driver but hasn't started it. Restart your PC once.".into(),
+        code => format!("Windows installed the UsbDk access driver but couldn't start it (error {code})."),
+    })
+}
+
 /// Supported coolers a context can see, numbered per model in a stable order.
 fn list(ctx: &Context) -> Vec<(String, u16, Device<Context>)> {
     let Ok(devices) = ctx.devices() else { return Vec::new() };
@@ -107,7 +128,11 @@ pub fn report() -> String {
     };
     let access = seen(access_context());
     let plain = if cfg!(windows) { seen(Context::new().ok()) } else { "same as above".into() };
-    format!("USB access (UsbDk on Windows): {access}\nUSB listing (Windows' own): {plain}")
+    let service = match crate::system::service_state("UsbDk") {
+        None => "not installed".to_string(),
+        Some(st) => format!("{} (exit code {})", if st.running { "running" } else { "stopped" }, st.exit_code),
+    };
+    format!("USB access (UsbDk on Windows): {access}\nUSB listing (Windows' own): {plain}\nUsbDk driver: {service}")
 }
 
 impl Default for UsbBackend {
@@ -167,6 +192,7 @@ impl Backend for UsbBackend {
                     // UsbDk is installed but can't see the cooler yet: it only
                     // attaches to USB devices after a restart.
                     needs_restart: !ok && self.access.is_some(),
+                    problem: (!ok && self.access.is_some()).then(usbdk_problem).flatten(),
                 }
             })
             .collect();
@@ -174,7 +200,7 @@ impl Backend for UsbBackend {
         if let Some(c) = self.access.as_ref() {
             for (id, pid, _) in list(c) {
                 if !out.iter().any(|f| f.id == id) {
-                    out.push(FoundCooler { id, vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: false, needs_restart: false });
+                    out.push(FoundCooler { id, vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: false, needs_restart: false, problem: None });
                 }
             }
         }

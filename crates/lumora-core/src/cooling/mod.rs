@@ -61,6 +61,8 @@ pub struct FoundCooler {
     /// Set up, but the access driver can't see the cooler until Windows
     /// restarts once.
     pub needs_restart: bool,
+    /// Why the cooler can't be reached yet, when it's more than a restart.
+    pub problem: Option<String>,
 }
 
 /// Finds coolers and opens them. The real implementation uses the OS HID

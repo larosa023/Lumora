@@ -970,6 +970,11 @@ $('#reportBtn').addEventListener('click', async () => {
   btn.textContent = 'Copy diagnostic report';
 });
 
+// "Copy the report" buttons elsewhere (cooler pages) do the same.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-copy-report]')) $('#reportBtn').click();
+});
+
 $('#rescanBtn').addEventListener('click', () => {
   api.invoke('rescan');
   toast('Looking for devices again. This takes a few seconds.');

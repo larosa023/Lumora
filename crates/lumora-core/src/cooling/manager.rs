@@ -301,7 +301,11 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     }
     if r.found.needs_restart {
         r.state = CoolerState::NeedsSetup;
-        r.message = "Setup is done. Restart your PC once so Windows lets Lumora reach this cooler.".into();
+        r.message = r
+            .found
+            .problem
+            .clone()
+            .unwrap_or_else(|| "Setup is done. Restart your PC once so Windows lets Lumora reach this cooler.".into());
         return;
     }
     if r.driver.is_none() {
@@ -420,9 +424,11 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
             for f in found {
                 if let Some(r) = inner.coolers.iter_mut().find(|r| r.found.id == f.id) {
                     // Setup (or the restart after it) may have finished.
-                    if (r.found.needs_setup && !f.needs_setup) || (r.found.needs_restart && !f.needs_restart) {
-                        r.found.needs_setup = f.needs_setup;
-                        r.found.needs_restart = f.needs_restart;
+                    let reachable_now = (r.found.needs_setup && !f.needs_setup) || (r.found.needs_restart && !f.needs_restart);
+                    r.found.needs_setup = f.needs_setup;
+                    r.found.needs_restart = f.needs_restart;
+                    r.found.problem = f.problem.clone();
+                    if reachable_now {
                         r.state = CoolerState::Idle;
                         r.message.clear();
                         r.retry_at = now;

@@ -340,11 +340,12 @@ impl Backend for FakeBackend {
                 serial: d.serial.clone(),
                 needs_setup: false,
                 needs_restart: false,
+                problem: None,
             })
             .collect();
         for h in self.hydros.lock().unwrap().iter() {
             let d = h.lock().unwrap();
-            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup, needs_restart: d.needs_restart });
+            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup, needs_restart: d.needs_restart, problem: None });
         }
         out
     }

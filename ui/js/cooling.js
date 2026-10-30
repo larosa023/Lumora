@@ -499,6 +499,14 @@ export function renderPage(c) {
     body.innerHTML = setupHtml(c);
     return;
   }
+  if (c.needs_restart && c.message && !/^Setup is done/.test(c.message)) {
+    body.innerHTML = `<div class="cool-page"><div class="hands-off static">
+      <strong>Lumora can't reach this cooler yet</strong>
+      <span>${ctx.esc(c.message)}</span>
+      <button class="btn" data-copy-report>Copy the troubleshooting report</button>
+    </div></div>`;
+    return;
+  }
   if (c.needs_restart) {
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
       <strong>One restart to finish</strong>
