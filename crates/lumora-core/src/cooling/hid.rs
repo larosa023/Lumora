@@ -7,7 +7,7 @@ use std::time::Duration;
 use hidapi::{HidApi, HidDevice};
 
 use super::kraken::{self, NZXT_VID};
-use super::{Backend, FoundCooler, Link};
+use super::{Backend, Bulk, FoundCooler, Link};
 
 pub struct HidBackend {
     api: Option<HidApi>,
@@ -67,6 +67,18 @@ impl Backend for HidBackend {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
         let dev = info.open_device(api).map_err(|e| io::Error::new(io::ErrorKind::PermissionDenied, e.to_string()))?;
         Ok(Box::new(Device(dev)))
+    }
+
+    fn open_bulk(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
+        #[cfg(feature = "usb")]
+        {
+            super::usb::open_kraken_bulk(cooler.vid, cooler.pid, &cooler.serial)
+        }
+        #[cfg(not(feature = "usb"))]
+        {
+            let _ = cooler;
+            Err(io::Error::new(io::ErrorKind::Unsupported, "this build can't send pictures"))
+        }
     }
 }
 

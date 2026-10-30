@@ -8,6 +8,7 @@
 //! * [`engine`] – the render loop that ties devices, effects and output together.
 //! * [`store`] – settings, profiles and the last session, saved as JSON.
 
+pub mod ambient;
 pub mod color;
 pub mod cooling;
 pub mod demo;

@@ -7,7 +7,7 @@ use serde::Serialize;
 use super::curve::SpeedSetting;
 use super::hydro::{self, HydroModel, HydroPro};
 use super::kraken::{self, Kraken, KrakenModel, PUMP_MIN_DUTY};
-use super::{CoolerStatus, LightSettings, Link, ScreenSettings};
+use super::{Bulk, CoolerStatus, LightSettings, Link, ScreenSettings};
 
 /// How a channel's speed is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -109,9 +109,16 @@ pub trait Driver: Send {
     fn firmware(&self) -> Option<String>;
     fn status(&mut self) -> io::Result<CoolerStatus>;
     fn set_speed(&mut self, channel: &str, setting: &SpeedSetting) -> io::Result<()>;
-    fn set_screen(&mut self, _settings: &ScreenSettings) -> io::Result<()> {
+    /// `pixels` is set when the screen should show a picture, already in the
+    /// screen's layout (see [`super::screen`]).
+    fn set_screen(&mut self, _settings: &ScreenSettings, _pixels: Option<&[u8]>) -> io::Result<()> {
         Ok(())
     }
+    /// Needs a bulk connection before it can show pictures.
+    fn wants_bulk(&self) -> bool {
+        false
+    }
+    fn attach_bulk(&mut self, _bulk: Box<dyn Bulk>) {}
     fn set_light(&mut self, _settings: &LightSettings) -> io::Result<()> {
         Ok(())
     }

@@ -12,7 +12,7 @@ use std::time::Duration;
 use rusb::{Context, Device, DeviceHandle, UsbContext};
 
 use super::hydro::{self, CORSAIR_VID};
-use super::{Backend, FoundCooler, Link};
+use super::{Backend, Bulk, FoundCooler, Link};
 
 const WRITE_ENDPOINT: u8 = 0x01;
 const READ_ENDPOINT: u8 = 0x81;
@@ -155,4 +155,84 @@ impl Backend for UsbBackend {
             .map_err(io_err)?;
         Ok(Box::new(UsbLink(handle)))
     }
+}
+
+/// The bulk connection NZXT Kraken screens take pictures over: a second USB
+/// interface next to the HID one, with a bulk OUT endpoint.
+///
+/// This uses libusb's normal Windows backend (WinUSB), never UsbDk: UsbDk
+/// would take the whole cooler away from Windows, HID part included.
+struct KrakenBulk {
+    handle: DeviceHandle<Context>,
+    iface: u8,
+    endpoint: u8,
+}
+
+impl Bulk for KrakenBulk {
+    fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        let mut done = 0;
+        while done < data.len() {
+            let n = self.handle.write_bulk(self.endpoint, &data[done..], Duration::from_secs(10)).map_err(io_err)?;
+            if n == 0 {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "the screen stopped taking data"));
+            }
+            done += n;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for KrakenBulk {
+    fn drop(&mut self) {
+        let _ = self.handle.release_interface(self.iface);
+    }
+}
+
+/// Opens the picture connection of the Kraken with this vendor, product and
+/// serial number.
+pub fn open_kraken_bulk(vid: u16, pid: u16, serial: &str) -> io::Result<Box<dyn Bulk>> {
+    let ctx = Context::new().map_err(io_err)?;
+    let devices = ctx.devices().map_err(io_err)?;
+    let mut candidates: Vec<Device<Context>> = devices
+        .iter()
+        .filter(|d| d.device_descriptor().is_ok_and(|desc| desc.vendor_id() == vid && desc.product_id() == pid))
+        .collect();
+    if candidates.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "the cooler's picture connection wasn't found"));
+    }
+    let mut last_err = io::Error::new(io::ErrorKind::NotFound, "the cooler's picture connection wasn't found");
+    // Several identical coolers: match the serial number when it's readable.
+    let several = candidates.len() > 1;
+    for dev in candidates.drain(..) {
+        let Ok(config) = dev.active_config_descriptor().or_else(|_| dev.config_descriptor(0)) else { continue };
+        let found = config.interfaces().flat_map(|i| i.descriptors()).find_map(|alt| {
+            alt.endpoint_descriptors()
+                .find(|e| e.transfer_type() == rusb::TransferType::Bulk && e.direction() == rusb::Direction::Out)
+                .map(|e| (alt.interface_number(), e.address()))
+        });
+        let Some((iface, endpoint)) = found else { continue };
+        let handle = match dev.open() {
+            Ok(h) => h,
+            Err(e) => {
+                last_err = io_err(e);
+                continue;
+            }
+        };
+        if several && !serial.is_empty() {
+            let desc = dev.device_descriptor().map_err(io_err)?;
+            if handle.read_serial_number_string_ascii(&desc).ok().as_deref() != Some(serial) {
+                continue;
+            }
+        }
+        let _ = handle.set_auto_detach_kernel_driver(true);
+        if let Err(e) = handle.claim_interface(iface) {
+            last_err = io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("Windows wouldn't hand over the screen's picture connection ({e}). It needs the WinUSB driver NZXT CAM installs."),
+            );
+            continue;
+        }
+        return Ok(Box::new(KrakenBulk { handle, iface, endpoint }));
+    }
+    Err(last_err)
 }

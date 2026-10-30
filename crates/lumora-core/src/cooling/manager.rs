@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::curve::{self, SpeedSetting};
 use super::family::{ChannelKind, Driver, Model};
-use super::{owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightSettings, ScreenSettings};
+use super::{owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightMode, LightSettings, ScreenMode, ScreenSettings};
 use crate::temps;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -56,6 +56,9 @@ pub struct CoolerView {
     pub takeover: bool,
     pub state: CoolerState,
     pub message: String,
+    /// Something that didn't work but doesn't stop the cooler (a picture
+    /// that wouldn't go on the screen).
+    pub notice: String,
     pub firmware: Option<String>,
     pub status: Option<CoolerStatus>,
     pub channels: Vec<ChannelView>,
@@ -81,6 +84,7 @@ struct Runtime {
     firmware: Option<String>,
     state: CoolerState,
     message: String,
+    notice: String,
     status: Option<CoolerStatus>,
     applied: Applied,
     retry_at: Instant,
@@ -209,8 +213,23 @@ fn desired(model: &Model, cfg: &CoolerConfig) -> Applied {
     Applied {
         speeds,
         screen: model.screen().map(|_| cfg.screen.clone()),
-        light: model.light().then(|| cfg.light.clone()),
+        light: model.light().then(|| resolve_light(&cfg.light)),
     }
+}
+
+/// "Match Lumora" becomes a plain color: the main effect's current color,
+/// rounded so tiny flickers don't cause a stream of USB writes.
+fn resolve_light(l: &LightSettings) -> LightSettings {
+    if l.mode != LightMode::Sync {
+        return l.clone();
+    }
+    let c = crate::ambient::get().unwrap_or(crate::Rgb::BLACK);
+    LightSettings { mode: LightMode::Sync, colors: vec![sync_hex(c)], speed: l.speed }
+}
+
+fn sync_hex(c: crate::Rgb) -> String {
+    let q = |v: u8| ((v as u16 + 4) / 8 * 8).min(255) as u8;
+    format!("#{:02x}{:02x}{:02x}", q(c.r), q(c.g), q(c.b))
 }
 
 fn views(inner: &Inner) -> Vec<CoolerView> {
@@ -231,6 +250,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 takeover: cfg.takeover,
                 state: r.state,
                 message: r.message.clone(),
+                notice: r.notice.clone(),
                 firmware: r.firmware.clone(),
                 status: r.status.clone(),
                 channels: r
@@ -303,7 +323,22 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
                 r.applied.speeds.insert(ch.clone(), setting.clone());
             } else if want.screen != r.applied.screen {
                 if let Some(s) = &want.screen {
-                    d.set_screen(s)?;
+                    let size = r.model.screen().map_or(0, |(w, _)| w as usize);
+                    let picture = matches!(s.mode, ScreenMode::Color | ScreenMode::Image);
+                    let shown = (|| -> std::io::Result<()> {
+                        let px = super::screen::pixels(s, size)?;
+                        if px.is_some() && d.wants_bulk() {
+                            d.attach_bulk(backend.open_bulk(&r.found)?);
+                        }
+                        d.set_screen(s, px.as_deref())
+                    })();
+                    match shown {
+                        Ok(()) => r.notice.clear(),
+                        // A picture that won't go up isn't worth dropping the
+                        // cooler over: say so and keep running it.
+                        Err(e) if picture => r.notice = format!("Couldn't put that on the screen: {e}"),
+                        Err(e) => return Err(e),
+                    }
                 }
                 r.applied.screen = want.screen.clone();
             } else if want.light != r.applied.light {
@@ -362,6 +397,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                         firmware: None,
                         state: CoolerState::Idle,
                         message: String::new(),
+                        notice: String::new(),
                         status: None,
                         applied: Applied::default(),
                         retry_at: now,
@@ -437,6 +473,7 @@ impl Runtime {
             firmware: self.firmware.clone(),
             state: self.state,
             message: self.message.clone(),
+            notice: self.notice.clone(),
             status: self.status.clone(),
             applied: self.applied.clone(),
             retry_at: self.retry_at,
@@ -450,7 +487,7 @@ mod tests {
     use super::super::curve::Preset;
     use super::super::fake::FakeBackend;
     use super::super::kraken::PUMP_MIN_DUTY;
-    use super::super::{LightMode, LightSpeed};
+    use super::super::LightSpeed;
     use super::*;
 
     fn wait(what: &str, mut f: impl FnMut() -> bool) {
@@ -618,5 +655,66 @@ mod tests {
         let running: HashSet<String> = ["nzxt cam.exe".to_string()].into();
         assert!(owner_is_running("NZXT CAM", &running));
         assert!(!owner_is_running("Corsair iCUE", &running));
+    }
+
+    #[test]
+    fn kraken_screen_shows_colors_and_pictures() {
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        cfg.screen.mode = ScreenMode::Color;
+        cfg.screen.colors = vec!["#ff0000".into(), "#0000ff".into()];
+        m.set_config(&id, cfg.clone());
+        wait("picture shown", || dev.lock().unwrap().shown_bucket.is_some());
+        {
+            let d = dev.lock().unwrap();
+            let px = 640 * 640 * 4;
+            assert_eq!(d.bulk.len(), 20 + px, "header plus every pixel");
+            assert_eq!(&d.bulk[..4], &[0x12, 0xFA, 0x01, 0xE8]);
+            assert_eq!(&d.bulk[16..20], &(px as u32).to_le_bytes());
+            assert_eq!(&d.bulk[20..24], &[255, 0, 0, 0], "top-left is the first color");
+        }
+        assert!(m.views()[0].notice.is_empty());
+
+        // A picture from a file, then back to the built-in screen.
+        let file = std::env::temp_dir().join(format!("lumora-screen-test-{}.rgba", std::process::id()));
+        std::fs::write(&file, vec![9u8; 640 * 640 * 4]).unwrap();
+        cfg.screen.mode = ScreenMode::Image;
+        cfg.screen.image = Some(file.display().to_string());
+        m.set_config(&id, cfg.clone());
+        wait("picture from file", || dev.lock().unwrap().bulk.get(20..24) == Some(&[9, 9, 9, 0]));
+        let _ = std::fs::remove_file(&file);
+
+        cfg.screen.mode = ScreenMode::Liquid;
+        m.set_config(&id, cfg.clone());
+        wait("liquid screen", || {
+            let d = dev.lock().unwrap();
+            d.liquid_screen && d.shown_bucket.is_none()
+        });
+
+        // A missing file is a notice, not a lost cooler.
+        cfg.screen.mode = ScreenMode::Image;
+        cfg.screen.image = Some("/nonexistent/lumora.rgba".into());
+        m.set_config(&id, cfg);
+        wait("notice", || !m.views()[0].notice.is_empty());
+        assert_eq!(m.views()[0].state, CoolerState::Active);
+    }
+
+    #[test]
+    fn corsair_follows_lumora_color() {
+        let (backend, dev) = FakeBackend::with_hydro(0x0C13);
+        let mut configs = BTreeMap::new();
+        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        cfg.light.mode = LightMode::Sync;
+        configs.insert("usb:1b1c:0c13:1-4".to_string(), cfg);
+        crate::ambient::set(crate::Rgb { r: 250, g: 10, b: 120 });
+        let m = manager(backend, configs, &[]);
+        // Other tests run the engine too, so only check that a color went out.
+        wait("synced color", || dev.lock().unwrap().light.iter().any(|msg| msg.first() == Some(&0x56)));
+        drop(m);
+        assert_eq!(sync_hex(crate::Rgb { r: 250, g: 10, b: 120 }), "#f80878");
+        assert_eq!(sync_hex(crate::Rgb { r: 255, g: 3, b: 0 }), "#ff0000");
     }
 }

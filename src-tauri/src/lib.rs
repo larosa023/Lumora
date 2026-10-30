@@ -95,6 +95,33 @@ fn set_cooler_config(app: State<App>, cooling: State<CoolingManager>, id: String
     Ok(cooling.views())
 }
 
+/// Saves a picture for a cooler's screen (raw RGBA at the screen's size, from
+/// the UI) and returns the file to put in the cooler's settings. Each pick gets
+/// a new file so the change is noticed; older picks for that cooler are removed.
+#[tauri::command]
+fn save_cooler_picture(handle: tauri::AppHandle, id: String, rgba: String) -> CmdResult<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(rgba.as_bytes()).map_err(|e| e.to_string())?;
+    let side = ((bytes.len() / 4) as f64).sqrt() as usize;
+    if bytes.is_empty() || side * side * 4 != bytes.len() {
+        return Err("The picture isn't square RGBA data".into());
+    }
+    let dir = handle.path().app_config_dir().map_err(|e| e.to_string())?.join("screens");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem: String = id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&format!("{stem}_")) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let path = dir.join(format!("{stem}_{stamp}.rgba"));
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
 pub fn run_elevated_helper() -> Option<i32> {
     engine_host::run_elevated_from_args()
 }
@@ -667,6 +694,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             setup_cooler_access,
+            save_cooler_picture,
             get_snapshot,
             set_effect,
             clear_override,

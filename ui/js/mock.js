@@ -42,8 +42,8 @@ const kraken = {
     { id: 'pump', name: 'Pump', min_duty: 20, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
     { id: 'fan', name: 'Radiator fans', min_duty: 0, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
   ],
-  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0 } },
-  light: null, needs_setup: false,
+  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0, colors: ['#7c5cff', '#00d2ff'], image: null } },
+  light: null, needs_setup: false, notice: '',
 };
 // `?corsair-setup` shows the one-time setup step.
 const hydro = {
@@ -55,7 +55,7 @@ const hydro = {
   ],
   screen: null,
   light: { mode: 'static', colors: ['#7c5cff', '#00d2ff'], speed: 'normal' },
-  needs_setup: location.search.includes('corsair-setup'),
+  needs_setup: location.search.includes('corsair-setup'), notice: '',
 };
 [kraken, hydro].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting))));
 let liquid = 33.2;
@@ -90,6 +90,7 @@ const DEVICES = [
   dev('gpu', 'Demo Graphics Card', 'gpu', linear([['Light Bar', 18]])),
   dev('aio', 'Demo AIO Cooler', 'cooler', linear([['Pump', 16], ['Fan 1', 12], ['Fan 2', 12], ['Fan 3', 12]])),
   dev('strip', 'Demo Case Strip', 'led_strip', linear([['Strip', 40]])),
+  { ...dev('nzxt', 'NZXT RGB & Fan Controller', 'led_strip', linear([['Fan 1', 8], ['Fan 2', 8], ['Fan 3', 8]])), vendor: 'NZXT' },
 ];
 
 const preset = (name, effect, colors, speed, size, direction) => ({
@@ -220,6 +221,7 @@ const commands = {
     if (config.light && k.light) k.light = config.light;
     return structuredClone(state.coolers);
   },
+  save_cooler_picture: ({ id }) => `/demo/screens/${id}_${Date.now()}.rgba`,
   setup_cooler_access: async () => {
     await new Promise((r) => setTimeout(r, 900));
     state.coolers.forEach((c) => (c.needs_setup = false));

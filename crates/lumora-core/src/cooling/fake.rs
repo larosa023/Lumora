@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::hydro::CORSAIR_VID;
 use super::kraken::NZXT_VID;
-use super::{Backend, FoundCooler, Link};
+use super::{Backend, Bulk, FoundCooler, Link};
 
 #[derive(Debug)]
 pub struct FakeKrakenState {
@@ -24,6 +24,14 @@ pub struct FakeKrakenState {
     /// Simulates another app holding the device: reads time out.
     pub busy: bool,
     pub unplugged: bool,
+    /// Picture slots: (start KiB, size KiB) when used.
+    pub buckets: [Option<(u16, u16)>; 16],
+    /// The slot being written and the slot shown (`None`: built-in screen).
+    pub writing: Option<u8>,
+    pub shown_bucket: Option<u8>,
+    /// Everything sent over the bulk connection.
+    pub bulk: Vec<u8>,
+    pub bulk_writes: usize,
     queue: VecDeque<Vec<u8>>,
     pump_duty: u8,
     fan_duty: u8,
@@ -43,6 +51,11 @@ impl FakeKrakenState {
             writes: 0,
             busy: false,
             unplugged: false,
+            buckets: [None; 16],
+            writing: None,
+            shown_bucket: None,
+            bulk: Vec::new(),
+            bulk_writes: 0,
             queue: VecDeque::new(),
             pump_duty: 70,
             fan_duty: 40,
@@ -99,11 +112,53 @@ impl FakeKrakenState {
             }
             (0x38, 0x01) => {
                 self.liquid_screen = r[2] == 0x02;
+                let ok = r[2] == 0x02 || self.buckets.get(r[3] as usize).is_some_and(|b| b.is_some());
+                if ok {
+                    self.shown_bucket = (r[2] == 0x04).then_some(r[3]);
+                }
                 let mut m = vec![0x39, 0x01];
+                m.resize(15, 0);
+                m[14] = ok as u8;
+                self.reply(m);
+            }
+            (0x36, 0x03) => self.reply(vec![0x37, 0x03]),
+            (0x30, 0x04) => {
+                let mut m = vec![0x31, 0x04];
+                m.resize(23, 0);
+                if let Some(Some((start, size))) = self.buckets.get(r[2] as usize) {
+                    m[14] = 0x01;
+                    m[15] = r[2];
+                    m[16] = r[2] + 1;
+                    m[17..19].copy_from_slice(&start.to_le_bytes());
+                    m[19..21].copy_from_slice(&size.to_le_bytes());
+                    m[21] = 1;
+                }
+                self.reply(m);
+            }
+            (0x32, 0x02) => {
+                if let Some(b) = self.buckets.get_mut(r[2] as usize) {
+                    *b = None;
+                }
+                let mut m = vec![0x33, 0x02];
                 m.resize(15, 0);
                 m[14] = 1;
                 self.reply(m);
             }
+            (0x32, 0x01) => {
+                let start = u16::from_le_bytes([r[4], r[5]]);
+                let size = u16::from_le_bytes([r[6], r[7]]);
+                self.buckets[r[2] as usize] = Some((start, size));
+                let mut m = vec![0x33, 0x01];
+                m.resize(15, 0);
+                m[14] = 1;
+                self.reply(m);
+            }
+            (0x36, 0x01) => {
+                self.writing = Some(r[2]);
+                self.bulk.clear();
+                self.reply(vec![0x37, 0x01]);
+            }
+            (0x36, 0x02) => self.writing = None,
             (0x72, _) => {
                 let channel = if r[1] == 0x01 { "pump" } else { "fan" };
                 let table = r[4..44].to_vec();
@@ -127,6 +182,18 @@ impl FakeKrakenState {
 }
 
 pub struct FakeKraken(pub Arc<Mutex<FakeKrakenState>>);
+
+pub struct FakeBulk(pub Arc<Mutex<FakeKrakenState>>);
+
+impl Bulk for FakeBulk {
+    fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        let mut s = self.0.lock().unwrap();
+        assert!(s.writing.is_some(), "bulk data only flows during a transfer");
+        s.bulk.extend_from_slice(data);
+        s.bulk_writes += 1;
+        Ok(())
+    }
+}
 
 impl Link for FakeKraken {
     fn write(&mut self, report: &[u8]) -> io::Result<()> {
@@ -293,5 +360,14 @@ impl Backend for FakeBackend {
             .find(|d| d.lock().unwrap().serial == cooler.serial)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "gone"))?;
         Ok(Box::new(FakeKraken(d.clone())))
+    }
+
+    fn open_bulk(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
+        let devices = self.devices.lock().unwrap();
+        let d = devices
+            .iter()
+            .find(|d| d.lock().unwrap().serial == cooler.serial)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "no picture connection"))?;
+        Ok(Box::new(FakeBulk(d.clone())))
     }
 }

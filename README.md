@@ -13,8 +13,8 @@ Lumora replaces the pile of vendor apps (iCUE, Armoury Crate, Mystic Light, Syna
 - **Nothing else to install.** On Windows, Lumora carries its own hardware engine (built on [OpenRGB](https://openrgb.org), bundled and run invisibly), which supports hundreds of RAM, motherboard, GPU, cooler, fan, LED strip, keyboard, mouse and headset controllers.
 - **RAM & motherboard in one click.** Windows only opens those to admin programs, so Lumora asks for permission once, installs the small signed PawnIO driver, and never asks again.
 - **Cooler control:** live liquid temperature, pump and fan speeds, Silent/Balanced/Performance presets, fixed speeds or your own fan curve.
-  - NZXT Kraken Z, Kraken 2023, Kraken Elite 2023 and Kraken 2024: pump curves too, plus the screen's brightness and rotation.
-  - Corsair Hydro H100i Pro, H115i Pro and H150i Pro: the pump's three modes and the pump logo lighting. On Windows a one-time setup installs the small UsbDk access driver (iCUE keeps working).
+  - NZXT Kraken Z, Kraken 2023, Kraken Elite 2023 and Kraken 2024: pump curves too, and the screen: the built-in temperature display, your own colors, or any picture, with brightness and rotation. The fan lighting (through NZXT's RGB & Fan Controller) is right on the cooler page.
+  - Corsair Hydro H100i Pro, H115i Pro and H150i Pro: the pump's three modes and the pump logo lighting, including "Match Lumora" to follow your main effect. On Windows a one-time setup installs the small UsbDk access driver (iCUE keeps working).
   - The cooler's own app (NZXT CAM, iCUE) stays in charge until you switch on "Run by Lumora" for that cooler. Fan curves are stored on the cooler, so it keeps following them with Lumora closed.
 - **13 effects:** Static, Gradient, Breathing, Spectrum, Aurora, Rainbow, Color Wave, Ripple, Comet, Marquee, Starfield, Fire and Temperature (colors follow your liquid or NVIDIA GPU temperature), each with its own controls.
 - **Colors your way:** a full color picker, hex entry, curated swatches, recent colors, screen eyedropper (Windows), up to six colors per effect and one-click palettes.

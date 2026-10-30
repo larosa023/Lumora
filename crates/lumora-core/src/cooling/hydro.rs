@@ -110,7 +110,8 @@ pub fn light_messages(s: &LightSettings) -> Vec<Vec<u8>> {
     };
     let (colors, speed_value, mode_msg) = match s.mode {
         // One color is sent as a two-color shift between the same color.
-        LightMode::Static => (vec![colors[0], colors[0]], None, vec![CMD_LIGHT_SHIFT, 0x01]),
+        // Sync arrives here already resolved to the current color.
+        LightMode::Static | LightMode::Sync => (vec![colors[0], colors[0]], None, vec![CMD_LIGHT_SHIFT, 0x01]),
         LightMode::Shift => {
             if colors.len() < 2 {
                 colors.push(colors[0]);

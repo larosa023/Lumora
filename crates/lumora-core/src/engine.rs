@@ -95,6 +95,9 @@ struct State {
     resizes: Vec<(String, usize, usize)>,
     /// 0 = dark, 1 = full; eases toward `enabled` for soft on/off.
     fade: f32,
+    /// The main effect rendered for one light in the middle, published for
+    /// single-color lights that follow Lumora.
+    ambient: Option<(EffectConfig, Box<dyn Effect>)>,
 }
 
 impl State {
@@ -158,6 +161,7 @@ impl Engine {
             reconnect: false,
             rescan: false,
             resizes: Vec::new(),
+            ambient: None,
         };
         state.refresh_demo();
         let shared = Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new(), stop: AtomicBool::new(false), listener });
@@ -557,6 +561,21 @@ fn run(shared: Arc<Shared>) {
                     previews.push((d.info.id.clone(), out.iter().flat_map(|c| [c.r, c.g, c.b]).collect()));
                     d.previewed = Some(out);
                 }
+            }
+
+            // One light in the middle of the layout, for coolers that follow.
+            let global = &s.lighting.global;
+            if s.ambient.as_ref().map(|(c, _)| c) != Some(global) {
+                s.ambient = Some((global.clone(), effects::build(global, 1)));
+            }
+            if let Some((cfg, fx)) = s.ambient.as_mut() {
+                let mut f = frame;
+                if cfg.effect == "temperature" {
+                    f.temp = crate::temps::get(&cfg.temp_source);
+                }
+                let mut one = [Rgb::BLACK];
+                fx.render(&f, &[LedPos { x: 0.5, y: 0.5 }], &mut one);
+                crate::ambient::set(one[0].scale(level));
             }
             (animating, s.settings.fps)
         };

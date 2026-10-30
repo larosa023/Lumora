@@ -7,12 +7,29 @@ const PRESETS = [
   ['performance', 'Performance'],
 ];
 const T0 = 20, T1 = 59, TMAX = 60;
-const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink']];
+const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
+const SCREEN_MODES = [['liquid', 'Temperature'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
+const PALETTE = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400', '#3ddc97'];
+// Quick picks on the fan lighting card; everything else is one click away.
+const FAN_EFFECTS = ['static', 'breathing', 'spectrum', 'color_wave', 'rainbow_wave', 'temperature'];
 const LIGHT_SPEEDS = [['slower', 'Slow'], ['normal', 'Normal'], ['faster', 'Fast']];
 const PUMP_MODE_NAMES = { quiet: 'Silent mode', balanced: 'Balanced mode', performance: 'Performance mode' };
 
 let ctx = null;
 let pendingSave = null;
+// Small previews of chosen pictures, by cooler (kept for this session, and in
+// browser storage when it's available).
+const pictures = new Map();
+const loadPreview = (id) => {
+  if (pictures.has(id)) return pictures.get(id);
+  try {
+    const p = localStorage.getItem('lumora.screen.' + id);
+    if (p) pictures.set(id, p);
+    return p;
+  } catch {
+    return null;
+  }
+};
 
 export function initCooling(context) {
   ctx = context;
@@ -60,7 +77,7 @@ function configOf(c) {
 }
 
 /** Applies a change locally right away and saves it shortly after. */
-function update(c, mutate, { now = false } = {}) {
+function update(c, mutate, { now = false, wait = 350 } = {}) {
   mutate(c);
   const send = async () => {
     pendingSave = null;
@@ -73,7 +90,7 @@ function update(c, mutate, { now = false } = {}) {
   };
   clearTimeout(pendingSave);
   if (now) send();
-  else pendingSave = setTimeout(send, 350);
+  else pendingSave = setTimeout(send, wait);
 }
 
 // --- Header & takeover ------------------------------------------------------------
@@ -226,17 +243,64 @@ function channelHtml(c, ch) {
   </section>`;
 }
 
+/** Color swatches with remove buttons and an add button. */
+function swatchesHtml(colors, max, kind) {
+  const list = colors.slice(0, max);
+  const sw = list.map((col, i) => `<label class="light-swatch" style="--c:${ctx.esc(col)}" title="Color ${i + 1}">
+      <input type="color" data-${kind}-color="${i}" value="${ctx.esc(col)}" aria-label="Color ${i + 1}">
+      ${list.length > 1 ? `<button type="button" class="light-remove" data-${kind}-remove="${i}" aria-label="Remove color ${i + 1}">×</button>` : ''}
+    </label>`).join('');
+  const add = list.length < max ? `<button type="button" class="light-add" data-${kind}-add aria-label="Add a color">+</button>` : '';
+  return `<div class="light-colors">${sw}${add}</div>`;
+}
+
+function screenPreview(c) {
+  const s = c.screen.settings;
+  const turn = `transform: rotate(${s.rotation || 0}deg)`;
+  if (s.mode === 'color') {
+    const cols = (s.colors || []).slice(0, 3);
+    const bg = cols.length > 1 ? `linear-gradient(135deg, ${cols.join(', ')})` : cols[0] || '#7c5cff';
+    return `<div class="screen-preview" style="background:${ctx.esc(bg)}"></div>`;
+  }
+  if (s.mode === 'image') {
+    const p = loadPreview(c.id);
+    return p
+      ? `<div class="screen-preview"><img src="${ctx.esc(p)}" alt="" style="${turn}"></div>`
+      : '<div class="screen-preview empty"><span>Your picture</span></div>';
+  }
+  if (s.mode === 'liquid') {
+    const t = c.status?.liquid_c;
+    return `<div class="screen-preview liquid"><b>${t == null ? '–' : Math.round(t)}</b><small>°C</small></div>`;
+  }
+  return '<div class="screen-preview empty"><span>Unchanged</span></div>';
+}
+
 function screenHtml(c) {
   if (!c.screen) return '';
   const s = c.screen.settings;
+  const modes = SCREEN_MODES.map(([v, l]) => `<button role="radio" data-screen-mode="${v}" aria-checked="${s.mode === v}">${l}</button>`).join('');
   const rot = [0, 90, 180, 270].map((r) => `<button role="radio" data-rotate="${r}" aria-checked="${s.rotation === r}">${r}°</button>`).join('');
+  const extra = s.mode === 'color'
+    ? `<div class="control">
+        <div class="control-label"><span>Colors</span><small>up to 3, blended</small></div>
+        ${swatchesHtml(s.colors || [], 3, 'screen')}
+      </div>`
+    : s.mode === 'image'
+      ? `<div class="control">
+          <button type="button" class="btn" data-screen-pick>${s.image ? 'Choose another picture…' : 'Choose a picture…'}</button>
+        </div>`
+      : '';
+  const note = s.mode === 'image' || s.mode === 'color'
+    ? 'It stays on the screen even with Lumora closed. Still pictures for now; animated GIFs are coming.'
+    : s.mode === 'liquid' ? 'The cooler draws this itself, live.' : 'Lumora leaves the screen showing whatever is on it.';
   return `<section class="cool-card">
     <header><h3>Screen</h3></header>
-    <div class="control">
-      <div class="control-label"><span>Shows</span></div>
-      <div class="segmented" role="radiogroup" aria-label="Screen shows">
-        <button role="radio" data-screen-mode="liquid" aria-checked="${s.mode === 'liquid'}">Liquid temperature</button>
-        <button role="radio" data-screen-mode="unchanged" aria-checked="${s.mode === 'unchanged'}">Leave as is</button>
+    <input type="file" id="screenFile" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" hidden>
+    <div class="screen-row">
+      ${screenPreview(c)}
+      <div class="screen-controls">
+        <div class="segmented grid2" role="radiogroup" aria-label="Screen shows">${modes}</div>
+        ${extra}
       </div>
     </div>
     <div class="control">
@@ -247,7 +311,49 @@ function screenHtml(c) {
       <div class="control-label"><span>Rotation</span></div>
       <div class="segmented" role="radiogroup" aria-label="Screen rotation">${rot}</div>
     </div>
-    <p class="hint">Your own images and GIFs on the screen are coming in a later update.</p>
+    <p class="hint">${note}</p>
+  </section>`;
+}
+
+/** Lighting of the vendor's other devices (an NZXT Kraken's fans run through
+ *  the RGB & Fan Controller), right on the cooler page. */
+function fanLightingHtml(c) {
+  const L = ctx.lighting;
+  if (!L) return '';
+  const vendor = new RegExp(c.vendor, 'i');
+  const list = L.devices().filter((d) => vendor.test(d.vendor) && d.led_count > 0);
+  if (!list.length) return '';
+  const names = L.labels();
+  const effects = L.effects();
+  const rows = list.map((d) => {
+    if (!d.managed) {
+      return `<div class="fan-light">
+        <div class="fan-light-head"><b>${ctx.esc(names[d.id])}</b><span class="nav-badge muted">Not controlled</span></div>
+        <p class="hint">Lumora leaves this one to ${ctx.esc(c.owner_app || 'its own app')}.</p>
+        <button class="btn" data-fan-control="${ctx.esc(d.id)}">Let Lumora light it</button>
+      </div>`;
+    }
+    const cfg = L.configOf(d.id);
+    const fx = effects.find((e) => e.id === cfg.effect);
+    const quick = FAN_EFFECTS.map((id) => effects.find((e) => e.id === id)).filter(Boolean);
+    if (fx && !quick.includes(fx)) quick.push(fx);
+    const chips = quick.map((e) => `<button role="radio" data-fan-effect="${ctx.esc(e.id)}" data-dev="${ctx.esc(d.id)}" aria-checked="${cfg.effect === e.id}">${ctx.esc(e.name)}</button>`).join('');
+    const max = fx?.max_colors || 0;
+    const colors = max
+      ? `<div class="light-colors">${cfg.colors.slice(0, max).map((col, i) => `<label class="light-swatch" style="--c:${ctx.esc(col)}">
+          <input type="color" data-fan-color="${i}" data-dev="${ctx.esc(d.id)}" value="${ctx.esc(col)}" aria-label="Color ${i + 1}"></label>`).join('')}
+          ${cfg.colors.length < max ? `<button type="button" class="light-add" data-fan-add="${ctx.esc(d.id)}" aria-label="Add a color">+</button>` : ''}</div>`
+      : '';
+    return `<div class="fan-light">
+      <div class="fan-light-head"><b>${ctx.esc(names[d.id])}</b><button class="link-btn" data-fan-open="${ctx.esc(d.id)}">All options →</button></div>
+      <div class="chips" role="radiogroup" aria-label="Effect">${chips}</div>
+      ${colors}
+    </div>`;
+  }).join('');
+  return `<section class="cool-card">
+    <header><h3>Fan lighting</h3></header>
+    ${rows}
+    <p class="hint">Your radiator fans light up through ${list.length > 1 ? 'these' : 'this'}. Changes here are the same as on the device's own page.</p>
   </section>`;
 }
 
@@ -256,28 +362,23 @@ function lightHtml(c) {
   const l = c.light;
   const modes = LIGHT_MODES.map(([v, t]) => `<button role="radio" data-light-mode="${v}" aria-checked="${l.mode === v}">${t}</button>`).join('');
   const max = l.mode === 'static' ? 1 : 4;
-  const colors = l.colors.slice(0, max);
-  const swatches = colors.map((col, i) => `<label class="light-swatch" style="--c:${ctx.esc(col)}" title="Color ${i + 1}">
-      <input type="color" data-light-color="${i}" value="${ctx.esc(col)}" aria-label="Color ${i + 1}">
-      ${colors.length > 1 ? `<button type="button" class="light-remove" data-light-remove="${i}" aria-label="Remove color ${i + 1}">×</button>` : ''}
-    </label>`).join('');
-  const add = colors.length < max ? '<button type="button" class="light-add" data-light-add aria-label="Add a color">+</button>' : '';
+  const sync = l.mode === 'sync';
   const speeds = LIGHT_SPEEDS.map(([v, t]) => `<button role="radio" data-light-speed="${v}" aria-checked="${l.speed === v}">${t}</button>`).join('');
   return `<section class="cool-card">
     <header><h3>Pump lighting</h3></header>
     <div class="control">
       <div class="control-label"><span>Effect</span></div>
-      <div class="segmented" role="radiogroup" aria-label="Pump lighting effect">${modes}</div>
+      <div class="chips" role="radiogroup" aria-label="Pump lighting effect">${modes}</div>
     </div>
-    <div class="control">
+    ${sync ? '' : `<div class="control">
       <div class="control-label"><span>${max > 1 ? 'Colors' : 'Color'}</span>${max > 1 ? '<small>up to 4</small>' : ''}</div>
-      <div class="light-colors">${swatches}${add}</div>
-    </div>
-    ${l.mode === 'static' ? '' : `<div class="control">
+      ${swatchesHtml(l.colors, max, 'light')}
+    </div>`}
+    ${l.mode === 'static' || sync ? '' : `<div class="control">
       <div class="control-label"><span>Speed</span></div>
       <div class="segmented" role="radiogroup" aria-label="Pump lighting speed">${speeds}</div>
     </div>`}
-    <p class="hint">The cooler runs this effect by itself, so it costs no CPU.</p>
+    <p class="hint">${sync ? 'Takes the color of your main effect, updated about once a second.' : 'The cooler runs this effect by itself, so it costs no CPU.'}</p>
   </section>`;
 }
 
@@ -311,12 +412,13 @@ export function renderPage(c) {
   const banner = c.state === 'error'
     ? `<div class="cool-banner error">${ctx.esc(c.message)}</div>${owner}`
     : owner || (c.state === 'connecting' ? '<div class="cool-banner">Connecting to the cooler…</div>' : '');
+  const notice = c.notice ? `<div class="cool-banner">${ctx.esc(c.notice)}</div>` : '';
   body.innerHTML = `<div class="cool-page">
-    ${banner}
+    ${banner}${notice}
     ${readouts(c)}
     <div class="cool-grid">
       <div class="cool-col">${c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
-      <div class="cool-col">${screenHtml(c)}${lightHtml(c)}</div>
+      <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>
     </div>
   </div>`;
 }
@@ -375,8 +477,51 @@ function onClick(ev) {
   }
   const sm = ev.target.closest('[data-screen-mode]');
   if (sm) {
-    update(c, (x) => (x.screen.settings.mode = sm.dataset.screenMode), { now: true });
+    const mode = sm.dataset.screenMode;
+    // A picture mode needs a picture first.
+    if (mode === 'image' && !c.screen.settings.image) {
+      $('#screenFile')?.click();
+      return;
+    }
+    update(c, (x) => {
+      x.screen.settings.mode = mode;
+      if (mode === 'color' && !(x.screen.settings.colors || []).length) x.screen.settings.colors = PALETTE.slice(0, 2);
+    }, { now: true });
     return render();
+  }
+  if (ev.target.closest('[data-screen-pick]')) return $('#screenFile').click();
+  if (ev.target.closest('[data-screen-add]')) {
+    update(c, (x) => x.screen.settings.colors.push(PALETTE.find((p) => !x.screen.settings.colors.includes(p)) || '#ffffff'), { now: true });
+    return render();
+  }
+  const srm = ev.target.closest('[data-screen-remove]');
+  if (srm) {
+    ev.preventDefault();
+    update(c, (x) => x.screen.settings.colors.splice(+srm.dataset.screenRemove, 1), { now: true });
+    return render();
+  }
+  // Fan lighting card (other devices' lighting).
+  const L = ctx.lighting;
+  const fe = ev.target.closest('[data-fan-effect]');
+  if (fe && L) {
+    const effect = L.effects().find((e) => e.id === fe.dataset.fanEffect);
+    const cfg = L.configOf(fe.dataset.dev);
+    L.setEffect(fe.dataset.dev, { ...cfg, effect: effect.id, colors: L.colorsFor(effect, cfg.colors.length ? cfg.colors : effect.default_colors) });
+    return render();
+  }
+  const fa = ev.target.closest('[data-fan-add]');
+  if (fa && L) {
+    const cfg = L.configOf(fa.dataset.fanAdd);
+    L.setEffect(fa.dataset.fanAdd, { ...cfg, colors: [...cfg.colors, PALETTE.find((p) => !cfg.colors.includes(p)) || '#ffffff'] });
+    return render();
+  }
+  const fo = ev.target.closest('[data-fan-open]');
+  if (fo && L) return L.open(fo.dataset.fanOpen);
+  const fc = ev.target.closest('[data-fan-control]');
+  if (fc && L) {
+    const d = L.devices().find((x) => x.id === fc.dataset.fanControl);
+    if (d) L.setControl(d, true).then(render);
+    return;
   }
   const rt = ev.target.closest('[data-rotate]');
   if (rt) {
@@ -397,8 +542,7 @@ function onClick(ev) {
     return render();
   }
   if (ev.target.closest('[data-light-add]')) {
-    const palette = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400'];
-    update(c, (x) => x.light.colors.push(palette.find((p) => !x.light.colors.includes(p)) || '#ffffff'), { now: true });
+    update(c, (x) => x.light.colors.push(PALETTE.find((p) => !x.light.colors.includes(p)) || '#ffffff'), { now: true });
     return render();
   }
   const rm = ev.target.closest('[data-light-remove]');
@@ -418,6 +562,17 @@ function onInput(ev) {
     t.style.setProperty('--p', `${t.value}%`);
     t.closest('.control').querySelector('output').textContent = `${t.value}%`;
     update(c, () => (ch.setting = { mode: 'fixed', duty: +t.value }));
+  } else if (t.dataset.screenColor != null) {
+    t.closest('.light-swatch').style.setProperty('--c', t.value);
+    update(c, (x) => (x.screen.settings.colors[+t.dataset.screenColor] = t.value), { wait: 900 });
+    const pv = document.querySelector('.screen-preview');
+    if (pv) pv.outerHTML = screenPreview(c);
+  } else if (t.dataset.fanColor != null && ctx.lighting) {
+    t.closest('.light-swatch').style.setProperty('--c', t.value);
+    const cfg = ctx.lighting.configOf(t.dataset.dev);
+    const colors = [...cfg.colors];
+    colors[+t.dataset.fanColor] = t.value;
+    queueFan(t.dataset.dev, { ...cfg, colors });
   } else if (t.dataset.lightColor != null) {
     t.closest('.light-swatch').style.setProperty('--c', t.value);
     update(c, (x) => (x.light.colors[+t.dataset.lightColor] = t.value));
@@ -428,7 +583,60 @@ function onInput(ev) {
   }
 }
 
+// Color drags send at most one lighting change per frame.
+let fanPending = null;
+function queueFan(id, cfg) {
+  if (!fanPending) requestAnimationFrame(() => {
+    const p = fanPending;
+    fanPending = null;
+    ctx.lighting.setEffect(p.id, p.cfg);
+  });
+  fanPending = { id, cfg };
+}
+
+/** Fits a picture to the screen (filling it, centered), saves it and shows it. */
+async function pickPicture(c, file) {
+  if (!file) return;
+  const size = c.screen.width;
+  try {
+    const bmp = await createImageBitmap(file);
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = size;
+    const g = cv.getContext('2d');
+    const k = Math.max(size / bmp.width, size / bmp.height);
+    const w = bmp.width * k, h = bmp.height * k;
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, size, size);
+    g.drawImage(bmp, (size - w) / 2, (size - h) / 2, w, h);
+    const data = g.getImageData(0, 0, size, size).data;
+    let bin = '';
+    for (let i = 0; i < data.length; i += 0x8000) bin += String.fromCharCode.apply(null, data.subarray(i, i + 0x8000));
+    const path = await ctx.api.invoke('save_cooler_picture', { id: c.id, rgba: btoa(bin) });
+    const thumb = document.createElement('canvas');
+    thumb.width = thumb.height = 160;
+    thumb.getContext('2d').drawImage(cv, 0, 0, 160, 160);
+    const url = thumb.toDataURL('image/jpeg', 0.82);
+    pictures.set(c.id, url);
+    try { localStorage.setItem('lumora.screen.' + c.id, url); } catch { /* preview only */ }
+    update(c, (x) => {
+      x.screen.settings.mode = 'image';
+      x.screen.settings.image = path;
+    }, { now: true });
+    ctx.toast('Sending the picture to the screen…');
+    render();
+  } catch (err) {
+    ctx.toast(`Couldn't use that picture: ${err}`);
+  }
+}
+
 function onChange(ev) {
+  if (ev.target.id === 'screenFile') {
+    const c = selectedCooler();
+    const file = ev.target.files && ev.target.files[0];
+    ev.target.value = '';
+    if (c && file) pickPicture(c, file);
+    return;
+  }
   if (ev.target.id !== 'takeoverSwitch') return;
   const c = selectedCooler();
   if (!c) return;

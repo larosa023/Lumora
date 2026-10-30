@@ -1112,7 +1112,8 @@ function onSnapshot(next) {
     next.overrides = snap().overrides;
   }
   state.app.snapshot = next;
-  if (state.selected && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
+  // Coolers aren't lighting devices, so they're never in this list.
+  if (state.selected && !cooling.coolerId(state.selected) && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
   if (devicesChanged) {
     renderAll();
   } else {
@@ -1149,7 +1150,26 @@ function onFrames(frames) {
 async function init() {
   if (!api.inApp) document.body.classList.add('browser');
   state.app = await api.invoke('get_state');
-  cooling.initCooling({ api, state, toast, esc, icon, rerender: () => { renderSidebar(); renderStage(); } });
+  cooling.initCooling({
+    api, state, toast, esc, icon,
+    rerender: () => { renderSidebar(); renderStage(); },
+    // Lighting on other devices, for the cooler page's fan lighting card.
+    lighting: {
+      devices: () => devices(),
+      labels: () => labels(),
+      effects: () => state.app.effects,
+      configOf: (id) => snap().overrides[id] || snap().global,
+      setEffect: (id, cfg) => {
+        snap().overrides[id] = cfg;
+        api.invoke('set_effect', { device: id, config: cfg });
+        markProfileModified();
+        renderSidebar();
+      },
+      colorsFor: (effect, from) => colorsFor(effect, from),
+      setControl: (d, on) => setControl(d, on),
+      open: (id) => select(id),
+    },
+  });
   applyTheme();
   renderAll();
   renderProfileName();

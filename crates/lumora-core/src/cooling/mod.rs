@@ -18,6 +18,7 @@ pub mod hid;
 pub mod hydro;
 pub mod kraken;
 pub mod manager;
+pub mod screen;
 #[cfg(feature = "usb")]
 pub mod usb;
 
@@ -39,6 +40,12 @@ pub trait Link: Send {
     fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>>;
 }
 
+/// A one-way bulk connection for large transfers (pictures for a Kraken's
+/// screen). Separate from the [`Link`], which carries commands.
+pub trait Bulk: Send {
+    fn write(&mut self, data: &[u8]) -> io::Result<()>;
+}
+
 /// A cooler found on the system (not necessarily opened).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FoundCooler {
@@ -57,6 +64,10 @@ pub struct FoundCooler {
 pub trait Backend: Send {
     fn discover(&mut self) -> Vec<FoundCooler>;
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>>;
+    /// Opens the cooler's bulk connection, for coolers that take pictures.
+    fn open_bulk(&mut self, _cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "this cooler doesn't take pictures"))
+    }
 }
 
 /// Several backends as one (HID for NZXT, raw USB for Corsair Hydro Pro).
@@ -88,6 +99,11 @@ impl Backend for MultiBackend {
         let i = *self.owners.get(&cooler.id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
         self.backends[i].open(cooler)
     }
+
+    fn open_bulk(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
+        let i = *self.owners.get(&cooler.id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
+        self.backends[i].open_bulk(cooler)
+    }
 }
 
 /// The vendor app that normally owns a cooler, by USB vendor id.
@@ -107,6 +123,10 @@ pub enum ScreenMode {
     Liquid,
     /// Leave whatever is on the screen alone.
     Unchanged,
+    /// A color or blend of colors drawn by Lumora.
+    Color,
+    /// A picture the user chose.
+    Image,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -117,11 +137,22 @@ pub struct ScreenSettings {
     pub brightness: u8,
     /// 0, 90, 180 or 270
     pub rotation: u16,
+    /// Colors for [`ScreenMode::Color`], `#rrggbb`, one to three.
+    pub colors: Vec<String>,
+    /// Picture for [`ScreenMode::Image`]: a file of raw RGBA pixels at the
+    /// screen's size, saved by the app. A new pick gets a new file name.
+    pub image: Option<String>,
 }
 
 impl Default for ScreenSettings {
     fn default() -> Self {
-        ScreenSettings { mode: ScreenMode::Liquid, brightness: 80, rotation: 0 }
+        ScreenSettings {
+            mode: ScreenMode::Liquid,
+            brightness: 80,
+            rotation: 0,
+            colors: vec!["#7c5cff".into(), "#00d2ff".into()],
+            image: None,
+        }
     }
 }
 
@@ -137,6 +168,8 @@ pub enum LightMode {
     Pulse,
     /// Blinks each color in turn.
     Blink,
+    /// Follows the color of Lumora's main effect (about once a second).
+    Sync,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
