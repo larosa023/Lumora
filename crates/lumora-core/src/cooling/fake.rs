@@ -235,6 +235,8 @@ pub struct FakeHydroState {
     pub writes: usize,
     /// Simulates a missing access driver.
     pub needs_setup: bool,
+    /// Simulates "installed, restart pending".
+    pub needs_restart: bool,
     queue: VecDeque<Vec<u8>>,
 }
 
@@ -250,6 +252,7 @@ impl FakeHydroState {
             light: Vec::new(),
             writes: 0,
             needs_setup: false,
+            needs_restart: false,
             queue: VecDeque::new(),
         }
     }
@@ -336,11 +339,12 @@ impl Backend for FakeBackend {
                 pid: d.pid,
                 serial: d.serial.clone(),
                 needs_setup: false,
+                needs_restart: false,
             })
             .collect();
         for h in self.hydros.lock().unwrap().iter() {
             let d = h.lock().unwrap();
-            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup });
+            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup, needs_restart: d.needs_restart });
         }
         out
     }

@@ -58,6 +58,9 @@ pub struct FoundCooler {
     /// The OS can see the cooler but Lumora can't talk to it until a one-time
     /// setup (on Windows: the UsbDk access driver for Corsair Hydro Pro).
     pub needs_setup: bool,
+    /// Set up, but the access driver can't see the cooler until Windows
+    /// restarts once.
+    pub needs_restart: bool,
 }
 
 /// Finds coolers and opens them. The real implementation uses the OS HID

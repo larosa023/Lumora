@@ -26,9 +26,9 @@ const USBXPRESS_REQUEST: u8 = 0x02;
 const USBXPRESS_CLEAR_TO_SEND: u16 = 0x02;
 
 pub struct UsbBackend {
-    ctx: Option<Context>,
-    /// The context can see coolers but can't open them yet.
-    needs_setup: bool,
+    /// A UsbDk context, once UsbDk is installed (Windows). Elsewhere a plain
+    /// context, which can open devices directly.
+    access: Option<Context>,
 }
 
 fn io_err(e: rusb::Error) -> io::Error {
@@ -42,55 +42,72 @@ fn io_err(e: rusb::Error) -> io::Error {
     io::Error::new(kind, e.to_string())
 }
 
-/// A context that can open coolers, and whether it needed a fallback.
-fn new_context() -> (Option<Context>, bool) {
+/// A context that can open coolers: UsbDk on Windows (`None` until it's
+/// installed), a plain one elsewhere.
+///
+/// libusb decides once per process whether UsbDk is there, when the first
+/// context starts. So this must be tried while no other context is alive,
+/// or a UsbDk installed meanwhile goes unnoticed until Lumora restarts.
+fn access_context() -> Option<Context> {
     #[cfg(windows)]
     {
-        if let Ok(ctx) = Context::with_options(&[rusb::UsbOption::use_usbdk()]) {
-            return (Some(ctx), false);
-        }
-        (Context::new().ok(), true)
+        Context::with_options(&[rusb::UsbOption::use_usbdk()]).ok()
     }
     #[cfg(not(windows))]
     {
-        (Context::new().ok(), false)
+        Context::new().ok()
     }
+}
+
+/// Supported coolers a context can see, numbered per model in a stable order.
+fn list(ctx: &Context) -> Vec<(String, u16, Device<Context>)> {
+    let Ok(devices) = ctx.devices() else { return Vec::new() };
+    let mut found: Vec<(u16, (u8, Vec<u8>), Device<Context>)> = devices
+        .iter()
+        .filter_map(|d| {
+            let desc = d.device_descriptor().ok()?;
+            (desc.vendor_id() == CORSAIR_VID && hydro::model(desc.product_id()).is_some())
+                .then(|| (desc.product_id(), (d.bus_number(), d.port_numbers().unwrap_or_default()), d))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut out = Vec::new();
+    let mut last: Option<(u16, usize)> = None;
+    for (pid, _, dev) in found {
+        let n = match last {
+            Some((p, n)) if p == pid => n + 1,
+            _ => 0,
+        };
+        last = Some((pid, n));
+        // Numbered rather than by port: ports read differently through UsbDk
+        // and plain Windows USB, and the saved settings must still match.
+        out.push((format!("usb:{CORSAIR_VID:04x}:{pid:04x}:{n}"), pid, dev));
+    }
+    out
 }
 
 impl UsbBackend {
     pub fn new() -> Self {
-        let (ctx, needs_setup) = new_context();
-        UsbBackend { ctx, needs_setup }
+        UsbBackend { access: access_context() }
     }
+}
 
-    /// Supported coolers, numbered per model in a stable order.
-    fn coolers(&self) -> Vec<(FoundCooler, Device<Context>)> {
-        let Some(ctx) = &self.ctx else { return Vec::new() };
-        let Ok(list) = ctx.devices() else { return Vec::new() };
-        let mut found: Vec<(u16, (u8, Vec<u8>), Device<Context>)> = list
-            .iter()
-            .filter_map(|d| {
-                let desc = d.device_descriptor().ok()?;
-                (desc.vendor_id() == CORSAIR_VID && hydro::model(desc.product_id()).is_some())
-                    .then(|| (desc.product_id(), (d.bus_number(), d.port_numbers().unwrap_or_default()), d))
-            })
-            .collect();
-        found.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        let mut out = Vec::new();
-        let mut last: Option<(u16, usize)> = None;
-        for (pid, _, dev) in found {
-            let n = match last {
-                Some((p, n)) if p == pid => n + 1,
-                _ => 0,
-            };
-            last = Some((pid, n));
-            // Numbered rather than by port: ports read differently before and
-            // after UsbDk is installed, and the saved settings must still match.
-            let id = format!("usb:{CORSAIR_VID:04x}:{pid:04x}:{n}");
-            out.push((FoundCooler { id, vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: self.needs_setup }, dev));
+/// What each way of looking at USB sees, for the troubleshooting report.
+pub fn report() -> String {
+    let seen = |ctx: Option<Context>| match ctx {
+        None => "not available".to_string(),
+        Some(c) => {
+            let l = list(&c);
+            if l.is_empty() {
+                "no Corsair Hydro Pro".to_string()
+            } else {
+                l.iter().map(|(id, _, _)| id.clone()).collect::<Vec<_>>().join(", ")
+            }
         }
-        out
-    }
+    };
+    let access = seen(access_context());
+    let plain = if cfg!(windows) { seen(Context::new().ok()) } else { "same as above".into() };
+    format!("USB access (UsbDk on Windows): {access}\nUSB listing (Windows' own): {plain}")
 }
 
 impl Default for UsbBackend {
@@ -124,26 +141,53 @@ impl Drop for UsbLink {
 
 impl Backend for UsbBackend {
     fn discover(&mut self) -> Vec<FoundCooler> {
-        let mut found = self.coolers();
-        // UsbDk may have been installed since the last look.
-        if self.needs_setup && !found.is_empty() {
-            let (ctx, needs_setup) = new_context();
-            if !needs_setup {
-                self.ctx = ctx;
-                self.needs_setup = false;
-                found = self.coolers();
+        // Not set up yet: look for UsbDk afresh (no context alive, see
+        // `access_context`).
+        if self.access.is_none() {
+            self.access = access_context();
+        }
+        let reachable: Vec<String> = self.access.as_ref().map(|c| list(c).into_iter().map(|(id, _, _)| id).collect()).unwrap_or_default();
+        // Windows' own view lists every cooler plugged in, set up or not.
+        // (Elsewhere the access context already sees everything.)
+        let plugged: Vec<(String, u16)> = if cfg!(windows) {
+            Context::new().ok().map(|c| list(&c).into_iter().map(|(id, pid, _)| (id, pid)).collect()).unwrap_or_default()
+        } else {
+            self.access.as_ref().map(|c| list(c).into_iter().map(|(id, pid, _)| (id, pid)).collect()).unwrap_or_default()
+        };
+        let mut out: Vec<FoundCooler> = plugged
+            .iter()
+            .map(|(id, pid)| {
+                let ok = reachable.contains(id);
+                FoundCooler {
+                    id: id.clone(),
+                    vid: CORSAIR_VID,
+                    pid: *pid,
+                    serial: String::new(),
+                    needs_setup: !ok && self.access.is_none(),
+                    // UsbDk is installed but can't see the cooler yet: it only
+                    // attaches to USB devices after a restart.
+                    needs_restart: !ok && self.access.is_some(),
+                }
+            })
+            .collect();
+        // Seen through UsbDk only (shouldn't happen, but never hide a cooler).
+        if let Some(c) = self.access.as_ref() {
+            for (id, pid, _) in list(c) {
+                if !out.iter().any(|f| f.id == id) {
+                    out.push(FoundCooler { id, vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: false, needs_restart: false });
+                }
             }
         }
-        found.into_iter().map(|(f, _)| f).collect()
+        out
     }
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
-        let dev = self
-            .coolers()
+        let ctx = self.access.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "the USB access driver isn't set up"))?;
+        let dev = list(ctx)
             .into_iter()
-            .find(|(f, _)| f.id == cooler.id)
-            .map(|(_, d)| d)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
+            .find(|(id, _, _)| *id == cooler.id)
+            .map(|(_, _, d)| d)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler isn't reachable yet"))?;
         let handle = dev.open().map_err(io_err)?;
         let _ = handle.set_auto_detach_kernel_driver(true);
         if handle.claim_interface(0).is_err() {

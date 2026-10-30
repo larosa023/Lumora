@@ -94,7 +94,9 @@ export function sidebarHtml() {
     const live = c.state === 'active' && c.status?.liquid_c != null;
     const badge = live
       ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${fmt(c.status.liquid_c, 1)}°</span>`
-      : c.takeover && c.needs_setup
+      : c.takeover && c.needs_restart
+        ? '<span class="nav-badge muted">Restart</span>'
+        : c.takeover && c.needs_setup
         ? '<span class="nav-badge muted">Setup</span>'
         : c.takeover
         ? '<span class="nav-badge muted">…</span>'
@@ -495,6 +497,13 @@ export function renderPage(c) {
   }
   if (c.needs_setup) {
     body.innerHTML = setupHtml(c);
+    return;
+  }
+  if (c.needs_restart) {
+    body.innerHTML = `<div class="cool-page"><div class="hands-off static">
+      <strong>One restart to finish</strong>
+      <span>The access driver is installed. Windows connects it to the cooler at the next start, so restart your PC once. After that Lumora finds the cooler on its own${c.owner_app ? `, and ${ctx.esc(c.owner_app)} keeps working whenever Lumora isn't running it` : ''}.</span>
+    </div></div>`;
     return;
   }
   const owner = c.owner_running

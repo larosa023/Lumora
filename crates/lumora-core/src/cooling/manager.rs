@@ -67,6 +67,8 @@ pub struct CoolerView {
     pub light: Option<LightSettings>,
     /// Lumora can't reach this cooler until a one-time setup.
     pub needs_setup: bool,
+    /// Set up, but Windows needs one restart before Lumora can reach it.
+    pub needs_restart: bool,
 }
 
 /// What was last written to a cooler, so unchanged settings aren't resent.
@@ -283,6 +285,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 screen: r.model.screen().map(|(w, h)| ScreenView { width: w, height: h, settings: cfg.screen.clone() }),
                 light: r.model.light().then(|| cfg.light.clone()),
                 needs_setup: r.found.needs_setup,
+                needs_restart: r.found.needs_restart,
             }
         })
         .collect()
@@ -294,6 +297,11 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     if r.found.needs_setup {
         r.state = CoolerState::NeedsSetup;
         r.message = "Lumora needs a one-time setup before it can reach this cooler.".into();
+        return;
+    }
+    if r.found.needs_restart {
+        r.state = CoolerState::NeedsSetup;
+        r.message = "Setup is done. Restart your PC once so Windows lets Lumora reach this cooler.".into();
         return;
     }
     if r.driver.is_none() {
@@ -411,9 +419,10 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
             inner.coolers.retain(|r| found.iter().any(|f| f.id == r.found.id));
             for f in found {
                 if let Some(r) = inner.coolers.iter_mut().find(|r| r.found.id == f.id) {
-                    // Setup may have finished since the last look.
-                    if r.found.needs_setup && !f.needs_setup {
-                        r.found.needs_setup = false;
+                    // Setup (or the restart after it) may have finished.
+                    if (r.found.needs_setup && !f.needs_setup) || (r.found.needs_restart && !f.needs_restart) {
+                        r.found.needs_setup = f.needs_setup;
+                        r.found.needs_restart = f.needs_restart;
                         r.state = CoolerState::Idle;
                         r.message.clear();
                         r.retry_at = now;
@@ -813,5 +822,18 @@ mod tests {
         dev.lock().unwrap().liquid_c = 41.2;
         thread::sleep(Duration::from_millis(2500));
         assert_eq!(dev.lock().unwrap().bulk_writes, writes);
+    }
+
+    #[test]
+    fn corsair_waits_for_the_restart_after_setup_then_connects() {
+        let (backend, dev) = FakeBackend::with_hydro(0x0C13);
+        dev.lock().unwrap().needs_restart = true;
+        let mut configs = BTreeMap::new();
+        configs.insert("usb:1b1c:0c13:1-4".to_string(), CoolerConfig { takeover: true, ..Default::default() });
+        let m = manager(backend, configs, &[]);
+        wait("restart notice", || m.views().first().is_some_and(|v| v.needs_restart && v.message.contains("Restart")));
+        assert_eq!(dev.lock().unwrap().writes, 0);
+        dev.lock().unwrap().needs_restart = false;
+        wait("active after the restart", || m.views()[0].state == CoolerState::Active);
     }
 }

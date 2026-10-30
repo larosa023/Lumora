@@ -54,7 +54,7 @@ impl Backend for HidBackend {
                 let serial = d.serial_number().unwrap_or("").to_string();
                 let id = format!("hid:{:04x}:{:04x}:{}", d.vendor_id(), d.product_id(), serial);
                 // Composite devices list one entry per interface.
-                seen.insert(id.clone()).then(|| FoundCooler { id, vid: d.vendor_id(), pid: d.product_id(), serial, needs_setup: false })
+                seen.insert(id.clone()).then(|| FoundCooler { id, vid: d.vendor_id(), pid: d.product_id(), serial, needs_setup: false, needs_restart: false })
             })
             .collect()
     }

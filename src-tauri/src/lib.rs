@@ -376,6 +376,7 @@ async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>
         let cpu = lumora_core::temps::cpu::status();
         let _ = writeln!(r, "CPU temperature: {:?} {} ({:?})", cpu.state, cpu.message, lumora_core::temps::get("cpu"));
         let _ = writeln!(r, "\n--- Coolers ---");
+        let _ = writeln!(r, "{}", lumora_core::cooling::usb::report());
         if cooling.is_empty() {
             let _ = writeln!(r, "(none found)");
         }
