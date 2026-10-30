@@ -54,6 +54,8 @@ jobs:
       - name: Bundle the hardware engine (Windows)
         if: matrix.platform == 'windows-latest'
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-engine.ps1
 
       - uses: tauri-apps/tauri-action@v0

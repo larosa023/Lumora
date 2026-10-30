@@ -32,6 +32,8 @@ jobs:
       - uses: swatinem/rust-cache@v2
       - name: Bundle the hardware engine
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-engine.ps1
       - name: App builds on Windows
         run: cargo build -p lumora
