@@ -102,26 +102,45 @@ fn text_width(text: &str, h: f32, gap: f32) -> f32 {
     text.chars().map(|c| glyphs::glyph(c).1).sum::<f32>() * h + gap * h * (n - 1.0).max(0.0)
 }
 
-/// Lumora's own temperature screen: the reading in big digits over the
-/// background colors, with a small label underneath.
-pub fn render_temperature(s: &ScreenSettings, value: Option<i32>, size: usize) -> Vec<u8> {
-    let mut img = render_colors(&s.background, size, size);
+fn label(source: &str) -> &'static str {
+    match source {
+        "gpu" => "GPU",
+        "cpu" => "CPU",
+        _ => "LIQUID",
+    }
+}
+
+/// Draws the readings (one big, or two stacked) in the text color.
+pub fn draw_readings(img: &mut [u8], s: &ScreenSettings, values: &[Option<i32>], size: usize) {
     let color = parse_hex(&s.text_color);
     let f = size as f32;
-    let digits = value.map_or("--".to_string(), |v| v.clamp(-99, 199).to_string());
-    let h = f * 0.30;
+    let sources = s.sources();
+    let n = sources.len().clamp(1, 2);
+    let (h, lh) = if n == 1 { (f * 0.30, f * 0.055) } else { (f * 0.19, f * 0.042) };
     let gap = 0.22;
-    let w = text_width(&digits, h, gap);
-    let deg_h = h * 0.32;
-    let total = w + deg_h * 0.35 + text_width("°C", deg_h, 0.18);
-    let x = (f - total) / 2.0;
-    let y = f * 0.5 - h * 0.62;
-    draw_text(&mut img, size, &digits, x, y, h, gap, color, 1.0);
-    draw_text(&mut img, size, "°C", x + w + deg_h * 0.35, y + h * 0.02, deg_h, 0.18, color, 0.85);
-    let label = if s.source == "gpu" { "GPU" } else { "LIQUID" };
-    let lh = f * 0.055;
-    let lw = text_width(label, lh, 0.55);
-    draw_text(&mut img, size, label, (f - lw) / 2.0, y + h * 1.2, lh, 0.55, color, 0.7);
+    let block = h + lh * 2.2;
+    let spacing = f * 0.05;
+    let total = block * n as f32 + spacing * (n as f32 - 1.0);
+    let mut top = (f - total) / 2.0;
+    for (i, src) in sources.iter().take(n).enumerate() {
+        let digits = values.get(i).copied().flatten().map_or("--".to_string(), |v| v.clamp(-99, 199).to_string());
+        let w = text_width(&digits, h, gap);
+        let deg_h = h * 0.32;
+        let width = w + deg_h * 0.35 + text_width("°C", deg_h, 0.18);
+        let x = (f - width) / 2.0;
+        draw_text(img, size, &digits, x, top, h, gap, color, 1.0);
+        draw_text(img, size, "°C", x + w + deg_h * 0.35, top + h * 0.02, deg_h, 0.18, color, 0.85);
+        let text = label(src);
+        let lw = text_width(text, lh, 0.55);
+        draw_text(img, size, text, (f - lw) / 2.0, top + h + lh * 0.9, lh, 0.55, color, 0.7);
+        top += block + spacing;
+    }
+}
+
+/// Lumora's own temperature screen: readings over the background colors.
+pub fn render_temperature(s: &ScreenSettings, values: &[Option<i32>], size: usize) -> Vec<u8> {
+    let mut img = render_colors(&s.background, size, size);
+    draw_readings(&mut img, s, values, size);
     img
 }
 
@@ -150,10 +169,10 @@ pub fn to_device(rgba: &[u8], size: usize, rotation: u16) -> Vec<u8> {
 
 /// The pixels to upload for these settings, or `None` when the screen shows
 /// something built in.
-pub fn pixels(s: &ScreenSettings, size: usize, value: Option<i32>) -> io::Result<Option<Vec<u8>>> {
-    let rgba = match s.mode {
+pub fn pixels(s: &ScreenSettings, size: usize, values: &[Option<i32>]) -> io::Result<Option<Vec<u8>>> {
+    let mut rgba = match s.mode {
         ScreenMode::Color => render_colors(&s.colors, size, size),
-        ScreenMode::Temperature => render_temperature(s, value, size),
+        ScreenMode::Temperature => render_colors(&s.background, size, size),
         ScreenMode::Image => {
             let path = s.image.as_deref().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no picture chosen"))?;
             let data = std::fs::read(path)?;
@@ -164,6 +183,9 @@ pub fn pixels(s: &ScreenSettings, size: usize, value: Option<i32>) -> io::Result
         }
         ScreenMode::Liquid | ScreenMode::Unchanged => return Ok(None),
     };
+    if s.shows_readings() {
+        draw_readings(&mut rgba, s, values, size);
+    }
     Ok(Some(to_device(&rgba, size, s.rotation)))
 }
 
@@ -200,13 +222,13 @@ mod tests {
             background: vec!["#000000".into()],
             ..Default::default()
         };
-        let img = render_temperature(&s, Some(36), 200);
+        let img = render_temperature(&s, &[Some(36)], 200);
         let green = img.chunks(4).filter(|p| p[1] > 200 && p[0] < 40).count();
         assert!(green > 400, "digits drawn ({green} px)");
         // Corners stay background.
         assert_eq!(&img[0..3], &[0, 0, 0]);
         // The middle column of a "36" is between the digits, mostly empty.
-        let blank = render_temperature(&s, None, 200);
+        let blank = render_temperature(&s, &[None], 200);
         assert_ne!(img, blank);
     }
 }

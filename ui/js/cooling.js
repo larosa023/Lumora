@@ -31,8 +31,49 @@ const loadPreview = (id) => {
   }
 };
 
+// CPU temperature comes from a small helper that needs a one-time setup.
+let cpu = { state: 'needs_setup', message: '' };
+const READINGS = [['liquid', 'Liquid'], ['cpu', 'CPU'], ['gpu', 'GPU']];
+
+/** One line on why there's no CPU reading. */
+export function cpuHint() {
+  if (cpu.state === 'error') return `CPU temperature isn't working: ${cpu.message}.`;
+  if (cpu.state === 'unsupported') return cpu.message || 'CPU temperature isn\'t available on this system.';
+  return 'CPU temperature needs a one-time setup (one Windows permission prompt).';
+}
+
+async function refreshCpu() {
+  try {
+    const next = await ctx.api.invoke('cpu_sensor');
+    const changed = next.state !== cpu.state || next.message !== cpu.message;
+    cpu = next;
+    if (changed && selectedCooler()) render();
+  } catch { /* preview without a backend */ }
+}
+
+async function setupCpu(btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Setting up…';
+  }
+  try {
+    await ctx.api.invoke('setup_cpu_sensor');
+    ctx.toast('CPU temperature is on. The first reading arrives in a few seconds.');
+  } catch (err) {
+    ctx.toast(`Couldn't turn on CPU temperature: ${err}`);
+  }
+  await refreshCpu();
+  render();
+}
+
 export function initCooling(context) {
   ctx = context;
+  refreshCpu();
+  setInterval(refreshCpu, 4000);
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-cpu-setup]');
+    if (b) setupCpu(b);
+  });
   document.addEventListener('click', onClick);
   document.addEventListener('input', onInput);
   document.addEventListener('change', onChange);
@@ -254,37 +295,61 @@ function swatchesHtml(colors, max, kind) {
   return `<div class="light-colors">${sw}${add}</div>`;
 }
 
+/** The readings Lumora draws, as the preview shows them. */
+function readingsFace(c, s) {
+  const list = (s.readings && s.readings.length ? s.readings : [s.source || 'liquid']).slice(0, 2);
+  const value = (src) => {
+    const t = src === 'liquid' ? c.status?.liquid_c : ctx.state.app.temps?.find((x) => x.source === src)?.celsius;
+    return t == null ? '--' : Math.round(t);
+  };
+  const names = { liquid: 'LIQUID', cpu: 'CPU', gpu: 'GPU' };
+  return `<div class="screen-face${list.length > 1 ? ' two' : ''}" style="color:${ctx.esc(s.text_color || '#fff')}">
+    ${list.map((src) => `<div class="screen-reading"><span class="screen-num"><b>${value(src)}</b><sup>°C</sup></span><small>${names[src] || ''}</small></div>`).join('')}
+  </div>`;
+}
+
+// The preview shows the screen as it looks on the cooler, so it isn't
+// rotated: rotation only turns the picture to match how the pump is mounted.
 function screenPreview(c) {
   const s = c.screen.settings;
-  const turn = `transform: rotate(${s.rotation || 0}deg)`;
   const blend = (cols, fallback) => {
     const list = (cols || []).slice(0, 3);
     return list.length > 1 ? `linear-gradient(135deg, ${list.join(', ')})` : list[0] || fallback;
   };
-  const reading = () => {
-    const t = s.source === 'gpu' ? ctx.state.app.temps?.find((x) => x.source === 'gpu')?.celsius : c.status?.liquid_c;
-    return t == null ? '--' : Math.round(t);
-  };
+  const overlay = s.overlay ? readingsFace(c, s) : '';
   if (s.mode === 'temperature') {
-    return `<div class="screen-preview" style="background:${ctx.esc(blend(s.background, '#000'))}">
-      <div class="screen-face" style="${turn}; color:${ctx.esc(s.text_color || '#fff')}">
-        <span class="screen-num"><b>${reading()}</b><sup>°C</sup></span>
-        <small>${s.source === 'gpu' ? 'GPU' : 'LIQUID'}</small>
-      </div></div>`;
+    return `<div class="screen-preview" style="background:${ctx.esc(blend(s.background, '#000'))}">${readingsFace(c, s)}</div>`;
   }
-  if (s.mode === 'color') return `<div class="screen-preview" style="background:${ctx.esc(blend(s.colors, '#7c5cff'))}"></div>`;
+  if (s.mode === 'color') return `<div class="screen-preview" style="background:${ctx.esc(blend(s.colors, '#7c5cff'))}">${overlay}</div>`;
   if (s.mode === 'image') {
     const p = loadPreview(c.id);
     return p
-      ? `<div class="screen-preview"><img src="${ctx.esc(p)}" alt="" style="${turn}"></div>`
-      : '<div class="screen-preview empty"><span>Your picture</span></div>';
+      ? `<div class="screen-preview"><img src="${ctx.esc(p)}" alt="">${overlay}</div>`
+      : `<div class="screen-preview empty">${overlay || '<span>Your picture</span>'}</div>`;
   }
   if (s.mode === 'liquid') {
-    return `<div class="screen-preview builtin"><div class="screen-face" style="${turn}">
+    return `<div class="screen-preview builtin"><div class="screen-face"><div class="screen-reading">
       <span class="screen-num"><b>${c.status?.liquid_c == null ? '--' : Math.round(c.status.liquid_c)}</b><sup>°C</sup></span>
-    </div></div>`;
+    </div></div></div>`;
   }
   return '<div class="screen-preview empty"><span>Unchanged</span></div>';
+}
+
+/** Which readings to draw (pick up to two), and their color. */
+function readingsHtml(s) {
+  const list = s.readings && s.readings.length ? s.readings : [s.source || 'liquid'];
+  const chips = READINGS.map(([v, l]) => `<button role="checkbox" data-reading="${v}" aria-checked="${list.includes(v)}">${l}</button>`).join('');
+  const needCpu = list.includes('cpu') && cpu.state !== 'ok';
+  return `<div class="control">
+      <div class="control-label"><span>Shows</span><small>pick up to 2</small></div>
+      <div class="chips" role="group" aria-label="Temperatures shown">${chips}</div>
+      ${needCpu ? `<div class="cool-banner compact">${ctx.esc(cpuHint())}${cpu.state === 'unsupported' ? '' : ' <button type="button" class="link-btn" data-cpu-setup>' + (cpu.state === 'error' ? 'Try the setup again' : 'Turn it on') + '</button>'}</div>` : ''}
+    </div>
+    <div class="control">
+      <div class="control-label"><span>Text color</span></div>
+      <div class="light-colors"><label class="light-swatch" style="--c:${ctx.esc(s.text_color || '#ffffff')}">
+        <input type="color" data-screen-text value="${ctx.esc(s.text_color || '#ffffff')}" aria-label="Text color"></label></div>
+    </div>`;
 }
 
 function screenHtml(c) {
@@ -292,19 +357,10 @@ function screenHtml(c) {
   const s = c.screen.settings;
   const modes = SCREEN_MODES.map(([v, l]) => `<button role="radio" data-screen-mode="${v}" aria-checked="${s.mode === v}">${l}</button>`).join('');
   const rot = [0, 90, 180, 270].map((r) => `<button role="radio" data-rotate="${r}" aria-checked="${s.rotation === r}">${r}°</button>`).join('');
+  const overlayToggle = `<label class="toggle-row"><span>Show temperatures on top</span>
+      <input type="checkbox" class="switch small" data-screen-overlay ${s.overlay ? 'checked' : ''}></label>`;
   const extra = s.mode === 'temperature'
-    ? `<div class="control">
-        <div class="control-label"><span>Shows</span></div>
-        <div class="segmented compact" role="radiogroup" aria-label="Temperature shown">
-          <button role="radio" data-screen-source="liquid" aria-checked="${s.source !== 'gpu'}">Liquid</button>
-          <button role="radio" data-screen-source="gpu" aria-checked="${s.source === 'gpu'}">Graphics card</button>
-        </div>
-      </div>
-      <div class="control">
-        <div class="control-label"><span>Number color</span></div>
-        <div class="light-colors"><label class="light-swatch" style="--c:${ctx.esc(s.text_color || '#ffffff')}">
-          <input type="color" data-screen-text value="${ctx.esc(s.text_color || '#ffffff')}" aria-label="Number color"></label></div>
-      </div>
+    ? `${readingsHtml(s)}
       <div class="control">
         <div class="control-label"><span>Background</span><small>up to 3, blended</small></div>
         ${swatchesHtml(s.background || ['#000000'], 3, 'screen-bg')}
@@ -313,17 +369,21 @@ function screenHtml(c) {
     ? `<div class="control">
         <div class="control-label"><span>Colors</span><small>up to 3, blended</small></div>
         ${swatchesHtml(s.colors || [], 3, 'screen')}
-      </div>`
+      </div>
+      ${overlayToggle}${s.overlay ? readingsHtml(s) : ''}`
     : s.mode === 'image'
       ? `<div class="control">
           <button type="button" class="btn" data-screen-pick>${s.image ? 'Choose another picture…' : 'Choose a picture…'}</button>
-        </div>`
+        </div>
+        ${overlayToggle}${s.overlay ? readingsHtml(s) : ''}`
       : '';
   const note = s.mode === 'temperature'
-    ? 'Lumora draws this in your colors and redraws it when the number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
+    ? 'Lumora draws this in your colors and redraws it when a number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
+    : (s.mode === 'image' || s.mode === 'color') && s.overlay
+      ? 'Lumora redraws it when a number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
     : s.mode === 'image' || s.mode === 'color'
     ? 'It stays on the screen even with Lumora closed. Still pictures for now; animated GIFs are coming.'
-    : s.mode === 'liquid' ? 'The cooler draws this itself, live, even with Lumora closed. Its colors can\'t be changed; use Temperature for your own.' : 'Lumora leaves the screen showing whatever is on it.';
+    : s.mode === 'liquid' ? 'The cooler draws this itself, live, even with Lumora closed. Its text can\'t be recolored; every other option can.' : 'Lumora leaves the screen showing whatever is on it.';
   return `<section class="cool-card">
     <header><h3>Screen</h3></header>
     <input type="file" id="screenFile" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" hidden>
@@ -521,9 +581,20 @@ function onClick(ev) {
     return render();
   }
   if (ev.target.closest('[data-screen-pick]')) return $('#screenFile').click();
-  const src = ev.target.closest('[data-screen-source]');
-  if (src) {
-    update(c, (x) => (x.screen.settings.source = src.dataset.screenSource), { now: true });
+  const rd = ev.target.closest('[data-reading]');
+  if (rd) {
+    update(c, (x) => {
+      const st = x.screen.settings;
+      let list = st.readings && st.readings.length ? [...st.readings] : [st.source || 'liquid'];
+      const v = rd.dataset.reading;
+      if (list.includes(v)) list = list.length > 1 ? list.filter((r) => r !== v) : list;
+      else list = [...list, v].slice(-2);
+      st.readings = list;
+    }, { now: true });
+    return render();
+  }
+  if (ev.target.closest('[data-screen-overlay]')) {
+    update(c, (x) => (x.screen.settings.overlay = ev.target.checked), { now: true });
     return render();
   }
   if (ev.target.closest('[data-screen-bg-add]')) {

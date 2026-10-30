@@ -1,7 +1,8 @@
 //! Live temperatures that effects can follow.
 //!
-//! Sources: `"liquid"` (a cooler Lumora is running) and `"gpu"` (NVIDIA cards,
-//! read through the driver's own NVML library, no extra install needed).
+//! Sources: `"liquid"` (a cooler Lumora is running), `"gpu"` (NVIDIA cards,
+//! read through the driver's own NVML library, no extra install needed) and
+//! `"cpu"` (on Windows from Lumora's sensor helper, on Linux from hwmon).
 //! Readings older than a few seconds count as missing.
 
 use std::collections::HashMap;
@@ -116,8 +117,151 @@ pub mod gpu {
     }
 }
 
+/// CPU temperature.
+///
+/// On Windows it comes from `lumora-sensors`, a small helper that runs with
+/// admin rights (Windows keeps the sensor from everyone else) and reports on
+/// `127.0.0.1:6744`. On Linux the kernel's hwmon drivers have it.
+pub mod cpu {
+    use std::sync::{Mutex, OnceLock};
+
+    use serde::Serialize;
+
+    /// Where the helper reports.
+    pub const PORT: u16 = 6744;
+
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum State {
+        /// Readings are coming in.
+        Ok,
+        /// The helper isn't installed or running (it needs a one-time setup).
+        NeedsSetup,
+        /// The helper runs but can't read the sensor; `message` says why.
+        Error,
+        /// This system has no way to read it.
+        Unsupported,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    pub struct Status {
+        pub state: State,
+        pub message: String,
+    }
+
+    fn slot() -> &'static Mutex<Status> {
+        static S: OnceLock<Mutex<Status>> = OnceLock::new();
+        S.get_or_init(|| Mutex::new(Status { state: State::NeedsSetup, message: String::new() }))
+    }
+
+    fn set_status(state: State, message: impl Into<String>) {
+        *slot().lock().unwrap_or_else(|e| e.into_inner()) = Status { state, message: message.into() };
+    }
+
+    pub fn status() -> Status {
+        slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Handles one line from the helper.
+    pub fn take_line(line: &str) {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("cpu ") {
+            if let Ok(c) = v.trim().parse::<f32>() {
+                super::set("cpu", Some(c));
+                set_status(State::Ok, "");
+            }
+        } else if let Some(msg) = line.strip_prefix("error ") {
+            super::set("cpu", None);
+            set_status(State::Error, msg);
+        }
+    }
+
+    /// Starts following the CPU temperature in the background.
+    pub fn start_polling() {
+        std::thread::Builder::new().name("lumora-cpu-temp".into()).spawn(run).ok();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn run() {
+        use std::io::{BufRead, BufReader};
+        use std::net::{SocketAddr, TcpStream};
+        use std::time::Duration;
+        if !cfg!(windows) {
+            set_status(State::Unsupported, "CPU temperature isn't available on this system yet");
+            return;
+        }
+        let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
+        loop {
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+                Ok(stream) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    for line in BufReader::new(stream).lines() {
+                        match line {
+                            Ok(l) => take_line(&l),
+                            Err(_) => break,
+                        }
+                    }
+                    super::set("cpu", None);
+                }
+                Err(_) => {
+                    if status().state != State::NeedsSetup {
+                        super::set("cpu", None);
+                    }
+                    set_status(State::NeedsSetup, "");
+                }
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
+    }
+
+    /// The package temperature from the CPU's hwmon driver.
+    #[cfg(target_os = "linux")]
+    fn run() {
+        use std::time::Duration;
+        loop {
+            match read_hwmon() {
+                Some(c) => {
+                    super::set("cpu", Some(c));
+                    set_status(State::Ok, "");
+                }
+                None => {
+                    super::set("cpu", None);
+                    set_status(State::Unsupported, "no CPU sensor found (k10temp or coretemp)");
+                }
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_hwmon() -> Option<f32> {
+        for e in std::fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
+            let dir = e.path();
+            let name = std::fs::read_to_string(dir.join("name")).unwrap_or_default();
+            let name = name.trim();
+            if name != "k10temp" && name != "coretemp" && name != "zenpower" {
+                continue;
+            }
+            // temp1 is Tctl on AMD and the package on Intel.
+            let milli: f32 = std::fs::read_to_string(dir.join("temp1_input")).ok()?.trim().parse().ok()?;
+            return Some(milli / 1000.0);
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cpu_helper_lines() {
+        super::cpu::take_line("cpu 47.125");
+        assert!((super::get("cpu").unwrap() - 47.125).abs() < 0.001);
+        assert_eq!(super::cpu::status().state, super::cpu::State::Ok);
+        super::cpu::take_line("error the PawnIO driver isn't installed");
+        assert_eq!(super::get("cpu"), None);
+        assert_eq!(super::cpu::status().message, "the PawnIO driver isn't installed");
+    }
+
     use super::*;
 
     #[test]

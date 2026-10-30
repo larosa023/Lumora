@@ -16,7 +16,7 @@ The hardware engine that detects and controls RGB devices.
 
 ## PawnIO
 
-Signed driver installer, run only if you turn on RAM & motherboard lighting.
+Signed driver installer, run only if you turn on RAM & motherboard lighting or CPU temperature. CPU temperature also uses PawnIO's signed sensor modules (`AMDFamily17.bin`, `IntelMSR.bin`, from https://github.com/namazso/PawnIO.Modules), which only allow reading a fixed set of registers.
 
 - Project, license and source code: https://pawnio.eu and https://github.com/namazso/PawnIO.Setup
 

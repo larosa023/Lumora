@@ -134,6 +134,18 @@ async fn enable_full_access(host: State<'_, Arc<EngineHost>>) -> CmdResult<Engin
         .map_err(|e| e.to_string())?
 }
 
+/// One-time setup for CPU temperature (a small helper with admin rights).
+#[tauri::command]
+async fn setup_cpu_sensor(host: State<'_, Arc<EngineHost>>) -> CmdResult<()> {
+    let h = host.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || h.install_cpu_sensor()).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn cpu_sensor() -> lumora_core::temps::cpu::Status {
+    lumora_core::temps::cpu::status()
+}
+
 /// One-time setup so Lumora can reach coolers that need an access driver
 /// (Corsair Hydro Pro on Windows). One Windows permission prompt.
 #[tauri::command]
@@ -349,6 +361,8 @@ async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>
     }
     {
         let cooling = cooling.views();
+        let cpu = lumora_core::temps::cpu::status();
+        let _ = writeln!(r, "CPU temperature: {:?} {} ({:?})", cpu.state, cpu.message, lumora_core::temps::get("cpu"));
         let _ = writeln!(r, "\n--- Coolers ---");
         if cooling.is_empty() {
             let _ = writeln!(r, "(none found)");
@@ -641,6 +655,7 @@ pub fn run() {
             );
             app.manage(cooling);
             lumora_core::temps::gpu::start_polling();
+            lumora_core::temps::cpu::start_polling();
             let temp_events = handle.clone();
             std::thread::spawn(move || loop {
                 let _ = temp_events.emit("lumora://temps", lumora_core::temps::all());
@@ -694,6 +709,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             setup_cooler_access,
+            setup_cpu_sensor,
+            cpu_sensor,
             save_cooler_picture,
             get_snapshot,
             set_effect,

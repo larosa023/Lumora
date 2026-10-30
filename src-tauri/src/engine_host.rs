@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 pub const TASK_NAME: &str = "Lumora\\Engine";
+/// The CPU temperature helper's sign-in task.
+pub const SENSORS_TASK: &str = "Lumora\\Sensors";
 pub const PORT: u16 = 6742;
 /// First argument that turns Lumora.exe into the elevated setup helper.
 pub const ELEVATED_FLAG: &str = "--lumora-elevated";
@@ -335,6 +337,15 @@ impl EngineHost {
         r
     }
 
+    /// Installs the CPU temperature helper (and the PawnIO driver it reads
+    /// through, if missing). One Windows permission prompt.
+    pub fn install_cpu_sensor(self: &Arc<Self>) -> Result<(), String> {
+        if !cfg!(windows) {
+            return Ok(());
+        }
+        self.run_elevated("sensors")
+    }
+
     /// Installs the UsbDk access driver that Corsair Hydro Pro coolers need on
     /// Windows. Unlike swapping the cooler's driver, UsbDk leaves iCUE working.
     pub fn install_cooler_driver(self: &Arc<Self>) -> Result<(), String> {
@@ -493,8 +504,7 @@ fn stop_installed_engine() {
     std::thread::sleep(Duration::from_millis(800));
 }
 
-fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
-    // 1. The PawnIO driver, for SMBus (RAM, motherboards).
+fn install_pawnio(engine: &Path) -> Result<(), String> {
     if !lumora_core::system::service_exists("PawnIO") {
         let setup = engine.join("PawnIO_setup.exe");
         if !setup.is_file() {
@@ -502,12 +512,65 @@ fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
         }
         let ok = hidden(Command::new(&setup).args(["-install", "-silent"]).current_dir(engine)).status().is_ok_and(|s| s.success());
         if !ok && !lumora_core::system::service_exists("PawnIO") {
-            return Err("Couldn't install the PawnIO driver that RAM and motherboard lighting need".into());
+            return Err("Couldn't install the PawnIO driver".into());
         }
     }
+    Ok(())
+}
+
+/// Registers `exe args` to start with admin rights at every sign-in, and
+/// starts it now.
+fn register_task(name: &str, user: &str, exe: &Path, args: &[String], what: &str) -> Result<(), String> {
+    let xml = task_xml(user, exe, args);
+    let xml_path = std::env::temp_dir().join(format!("lumora-task-{}.xml", std::process::id()));
+    std::fs::write(&xml_path, utf16_with_bom(&xml)).map_err(|e| e.to_string())?;
+    let created = quiet_ok("schtasks", &["/create", "/tn", name, "/xml", &xml_path.display().to_string(), "/f"]);
+    let _ = std::fs::remove_file(&xml_path);
+    if !created {
+        return Err(format!("Couldn't register {what} to start at sign-in"));
+    }
+    let _ = quiet_ok("schtasks", &["/run", "/tn", name]);
+    Ok(())
+}
+
+fn sensors_exe(dir: &Path) -> PathBuf {
+    dir.join("sensors").join("lumora-sensors.exe")
+}
+
+fn stop_sensors() {
+    let _ = quiet_ok("schtasks", &["/end", "/tn", SENSORS_TASK]);
+    let exe = sensors_exe(&installed_dir());
+    for p in lumora_core::system::processes() {
+        if p.name == "lumora-sensors.exe" && lumora_core::system::process_path(p.pid).is_some_and(|path| same_file(&path, &exe)) {
+            lumora_core::system::kill(p.pid);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// Copies the CPU temperature helper next to the engine (where only admins
+/// can change it) and starts it at every sign-in.
+fn elevated_sensors(engine: &Path, user: &str) -> Result<(), String> {
+    if !engine.join("sensors").join("lumora-sensors.exe").is_file() {
+        return Err("The CPU temperature helper is missing from this copy of Lumora".into());
+    }
+    install_pawnio(engine)?;
+    stop_sensors();
+    let target = installed_dir().join("sensors");
+    if target.exists() {
+        std::fs::remove_dir_all(&target).map_err(|e| format!("Couldn't replace the old CPU temperature helper: {e}"))?;
+    }
+    copy_dir(&engine.join("sensors"), &target).map_err(|e| format!("Couldn't copy the CPU temperature helper: {e}"))?;
+    register_task(SENSORS_TASK, user, &sensors_exe(&installed_dir()), &[], "the CPU temperature helper")
+}
+
+fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
+    // 1. The PawnIO driver, for SMBus (RAM, motherboards).
+    install_pawnio(engine)?;
 
     // 2. A copy of the engine only admins can change.
     stop_installed_engine();
+    stop_sensors();
     let target = installed_dir();
     if target.exists() {
         std::fs::remove_dir_all(&target).map_err(|e| format!("Couldn't replace the old engine: {e}"))?;
@@ -521,15 +584,12 @@ fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
     prepare_engine_config(&config);
 
     // 3. Start it elevated at every sign-in.
-    let xml = task_xml(user, &openrgb_exe(&target), &server_args(&config));
-    let xml_path = std::env::temp_dir().join("lumora-engine-task.xml");
-    std::fs::write(&xml_path, utf16_with_bom(&xml)).map_err(|e| e.to_string())?;
-    let created = quiet_ok("schtasks", &["/create", "/tn", TASK_NAME, "/xml", &xml_path.display().to_string(), "/f"]);
-    let _ = std::fs::remove_file(&xml_path);
-    if !created {
-        return Err("Couldn't register the engine to start at sign-in".into());
+    register_task(TASK_NAME, user, &openrgb_exe(&target), &server_args(&config), "the engine")?;
+
+    // 4. The CPU temperature helper rides along when this copy has it.
+    if engine.join("sensors").join("lumora-sensors.exe").is_file() {
+        let _ = elevated_sensors(engine, user);
     }
-    let _ = quiet_ok("schtasks", &["/run", "/tn", TASK_NAME]);
     Ok(())
 }
 
@@ -595,6 +655,8 @@ fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
 
 fn elevated_remove() -> Result<(), String> {
     stop_installed_engine();
+    stop_sensors();
+    let _ = quiet_ok("schtasks", &["/delete", "/tn", SENSORS_TASK, "/f"]);
     let _ = quiet_ok("schtasks", &["/delete", "/tn", TASK_NAME, "/f"]);
     let dir = installed_dir();
     if dir.exists() {
@@ -618,6 +680,7 @@ pub fn run_elevated_from_args() -> Option<i32> {
         "install" => elevated_install(&engine, &user),
         "remove" => elevated_remove(),
         "cooler-driver" => elevated_cooler_driver(&engine),
+        "sensors" => elevated_sensors(&engine, &user),
         other => Err(format!("Unknown action {other}")),
     };
     match result {

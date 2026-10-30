@@ -146,10 +146,33 @@ pub struct ScreenSettings {
     /// screen's size, saved by the app. A new pick gets a new file name.
     pub image: Option<String>,
     /// [`ScreenMode::Temperature`]: digit color, background (one to three
-    /// colors, blended) and which reading to show (`liquid` or `gpu`).
+    /// colors, blended) and which readings to show.
     pub text_color: String,
     pub background: Vec<String>,
+    /// Older single choice; [`ScreenSettings::sources`] reads it when
+    /// `readings` is empty.
     pub source: String,
+    /// Up to two of `liquid`, `cpu` and `gpu`.
+    pub readings: Vec<String>,
+    /// Show the readings on top of [`ScreenMode::Color`] and
+    /// [`ScreenMode::Image`] too.
+    pub overlay: bool,
+}
+
+impl ScreenSettings {
+    /// The readings to show, one or two.
+    pub fn sources(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.readings.iter().take(2).cloned().collect();
+        if v.is_empty() {
+            v.push(if self.source.is_empty() { "liquid".into() } else { self.source.clone() });
+        }
+        v
+    }
+
+    /// Lumora draws live readings on the screen (so it redraws as they change).
+    pub fn shows_readings(&self) -> bool {
+        self.mode == ScreenMode::Temperature || (self.overlay && matches!(self.mode, ScreenMode::Color | ScreenMode::Image))
+    }
 }
 
 impl Default for ScreenSettings {
@@ -163,6 +186,8 @@ impl Default for ScreenSettings {
             text_color: "#ffffff".into(),
             background: vec!["#000000".into()],
             source: "liquid".into(),
+            readings: vec!["liquid".into()],
+            overlay: false,
         }
     }
 }

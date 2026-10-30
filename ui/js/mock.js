@@ -42,7 +42,7 @@ const kraken = {
     { id: 'pump', name: 'Pump', min_duty: 20, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
     { id: 'fan', name: 'Radiator fans', min_duty: 0, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
   ],
-  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0, colors: ['#7c5cff', '#00d2ff'], image: null, text_color: '#ffffff', background: ['#000000'], source: 'liquid' } },
+  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0, colors: ['#7c5cff', '#00d2ff'], image: null, text_color: '#ffffff', background: ['#000000'], source: 'liquid', readings: ['liquid'], overlay: false } },
   light: null, needs_setup: false, notice: '',
 };
 // `?corsair-setup` shows the one-time setup step.
@@ -59,6 +59,7 @@ const hydro = {
 };
 [kraken, hydro].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting))));
 let liquid = 33.2;
+let cpuOn = location.search.includes('cpu');
 
 function linear(zones) {
   let start = 0;
@@ -191,6 +192,7 @@ setInterval(() => {
   state.temps = [
     ...(k.takeover ? [{ source: 'liquid', celsius: k.status.liquid_c }] : []),
     { source: 'gpu', celsius: 54 + Math.round(Math.sin(performance.now() / 9000) * 80) / 10 },
+    ...(cpuOn ? [{ source: 'cpu', celsius: 47 + Math.round(Math.cos(performance.now() / 7000) * 60) / 10 }] : []),
   ];
   emit('lumora://coolers', structuredClone(state.coolers));
   emit('lumora://temps', structuredClone(state.temps));
@@ -222,6 +224,11 @@ const commands = {
     return structuredClone(state.coolers);
   },
   save_cooler_picture: ({ id }) => `/demo/screens/${id}_${Date.now()}.rgba`,
+  cpu_sensor: () => (cpuOn ? { state: 'ok', message: '' } : { state: 'needs_setup', message: '' }),
+  setup_cpu_sensor: async () => {
+    await new Promise((r) => setTimeout(r, 700));
+    cpuOn = true;
+  },
   setup_cooler_access: async () => {
     await new Promise((r) => setTimeout(r, 900));
     state.coolers.forEach((c) => (c.needs_setup = false));

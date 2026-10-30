@@ -529,6 +529,10 @@ function renderTempNow() {
   if (!el || $('#tempControl').hidden) return;
   const source = currentConfig().temp_source || 'liquid';
   const v = tempReading(source);
+  if (v == null && source === 'cpu') {
+    el.innerHTML = `${esc(cooling.cpuHint())} <button type="button" class="link-btn" data-cpu-setup>Turn on CPU temperature</button>`;
+    return;
+  }
   el.textContent = v != null
     ? `Now ${v.toFixed(1)} °C`
     : source === 'liquid'
@@ -647,8 +651,8 @@ for (const key of ['speed', 'size']) {
 $('#tempSource').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-v]');
   if (!b) return;
-  // Sensible ranges per source: liquid runs cool, GPUs run hot.
-  const range = b.dataset.v === 'gpu' ? [40, 80] : [30, 45];
+  // Sensible ranges per source: liquid runs cool, CPUs and GPUs run hot.
+  const range = { gpu: [40, 80], cpu: [40, 85] }[b.dataset.v] || [30, 45];
   applyConfig({ ...currentConfig(), temp_source: b.dataset.v, temp_low: range[0], temp_high: range[1] });
 });
 

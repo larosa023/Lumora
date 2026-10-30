@@ -2,6 +2,7 @@
 #   - OpenRGB (GPL-2.0), unmodified, from its official Codeberg release
 #   - the PawnIO driver installer, used only if you turn on RAM & motherboard lighting
 #   - the UsbDk driver installer, used only if you set up a Corsair Hydro Pro cooler
+#   - PawnIO's signed CPU sensor modules, for the CPU temperature helper
 # Run from the repo root before `npm run build` on Windows (CI does this for you):
 #   powershell -ExecutionPolicy Bypass -File scripts/fetch-engine.ps1
 param(
@@ -62,6 +63,35 @@ if ($asset.name -like '*.zip') {
   $download = (Get-ChildItem -Path (Join-Path $tmp 'usbdk') -Recurse -Filter '*.msi' | Select-Object -First 1).FullName
 }
 Copy-Item $download (Join-Path $engine 'UsbDk_x64.msi')
+
+# PawnIO's signed modules for reading CPU temperature (AMD Ryzen, Intel).
+# The helper itself (lumora-sensors.exe) is built from this repo by CI.
+$sensors = Join-Path $engine 'sensors'
+New-Item -ItemType Directory -Force -Path $sensors | Out-Null
+try {
+  $mods = Retry { Invoke-RestMethod -Uri 'https://api.github.com/repos/namazso/PawnIO.Modules/releases/latest' -Headers $apiHeaders } 'PawnIO modules lookup'
+  $wanted = @('AMDFamily17.bin', 'IntelMSR.bin')
+  foreach ($a in $mods.assets) {
+    if ($wanted -contains $a.name) {
+      Retry { Invoke-WebRequest -Uri $a.browser_download_url -OutFile (Join-Path $sensors $a.name) } "$($a.name) download"
+    } elseif ($a.name -like '*.zip') {
+      $zip = Join-Path $tmp $a.name
+      Retry { Invoke-WebRequest -Uri $a.browser_download_url -OutFile $zip } "$($a.name) download"
+      $out = Join-Path $tmp ('mods-' + [IO.Path]::GetFileNameWithoutExtension($a.name))
+      Expand-Archive -Path $zip -DestinationPath $out -Force
+      foreach ($w in $wanted) {
+        $f = Get-ChildItem -Path $out -Recurse -Filter $w | Select-Object -First 1
+        if ($f -and -not (Test-Path (Join-Path $sensors $w))) { Copy-Item $f.FullName (Join-Path $sensors $w) }
+      }
+    }
+  }
+  foreach ($w in $wanted) {
+    if (Test-Path (Join-Path $sensors $w)) { Write-Host "PawnIO module $w ($($mods.tag_name))" }
+    else { Write-Warning "PawnIO module $w not found; CPU temperature won't be available for that CPU maker" }
+  }
+} catch {
+  Write-Warning "PawnIO modules unavailable: $_. CPU temperature won't be available in this build."
+}
 
 # Licenses travel with the binaries.
 $license = Get-ChildItem -Path (Join-Path $engine 'openrgb') -Recurse -Include 'LICENSE*', 'COPYING*' | Select-Object -First 1

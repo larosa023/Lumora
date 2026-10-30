@@ -2133,7 +2133,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lumora"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "lumora-core",
@@ -2149,13 +2149,21 @@ dependencies = [
 
 [[package]]
 name = "lumora-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "hidapi",
  "libloading 0.8.9",
  "rusb",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "lumora-sensors"
+version = "0.6.0"
+dependencies = [
+ "libloading 0.8.9",
  "windows-sys 0.61.2",
 ]
 

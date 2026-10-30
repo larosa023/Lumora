@@ -37,6 +37,8 @@ jobs:
         run: ./scripts/fetch-engine.ps1
       - name: App builds on Windows
         run: cargo build -p lumora
+      - name: CPU temperature helper builds
+        run: cargo build -p lumora-sensors && cargo test -p lumora-sensors
       - name: Windows unit tests
         run: cargo test -p lumora
 

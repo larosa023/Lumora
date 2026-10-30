@@ -89,8 +89,8 @@ struct Runtime {
     applied: Applied,
     retry_at: Instant,
     last_write: Instant,
-    /// The number on Lumora's own temperature screen, and when it was drawn.
-    screen_value: Option<i32>,
+    /// The numbers on the screen Lumora draws, and when they were drawn.
+    screen_value: Vec<Option<i32>>,
     screen_drawn: Instant,
 }
 
@@ -325,16 +325,22 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     }
 
     let want = desired(&r.model, cfg);
-    // Lumora's own temperature screen: the number to show right now.
-    let live = want.screen.as_ref().filter(|s| s.mode == ScreenMode::Temperature).map(|s| {
-        let reading = if s.source == "gpu" { temps::get("gpu") } else { r.status.as_ref().and_then(|st| st.liquid_c) };
-        match (reading, r.screen_value) {
-            (Some(t), Some(shown)) if (t - shown as f32).abs() < LIVE_HYSTERESIS => Some(shown),
-            (Some(t), _) => Some(t.round() as i32),
-            (None, _) => None,
-        }
+    // Readings Lumora draws on the screen: the numbers to show right now.
+    let live: Option<Vec<Option<i32>>> = want.screen.as_ref().filter(|s| s.shows_readings()).map(|s| {
+        s.sources()
+            .iter()
+            .enumerate()
+            .map(|(i, src)| {
+                let reading = if src == "liquid" { r.status.as_ref().and_then(|st| st.liquid_c) } else { temps::get(src) };
+                match (reading, r.screen_value.get(i).copied().flatten()) {
+                    (Some(t), Some(shown)) if (t - shown as f32).abs() < LIVE_HYSTERESIS => Some(shown),
+                    (Some(t), _) => Some(t.round() as i32),
+                    (None, _) => None,
+                }
+            })
+            .collect()
     });
-    let live_due = live.is_some_and(|v| v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY);
+    let live_due = live.as_ref().is_some_and(|v| *v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY);
     let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
         if r.applied != want && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
@@ -346,11 +352,11 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
                 if let Some(s) = &want.screen {
                     let size = r.model.screen().map_or(0, |(w, _)| w as usize);
                     let picture = matches!(s.mode, ScreenMode::Color | ScreenMode::Image | ScreenMode::Temperature);
-                    let value = live.flatten();
-                    r.screen_value = value;
+                    let values = live.clone().unwrap_or_default();
+                    r.screen_value = values.clone();
                     r.screen_drawn = Instant::now();
                     let shown = (|| -> std::io::Result<()> {
-                        let px = super::screen::pixels(s, size, value)?;
+                        let px = super::screen::pixels(s, size, &values)?;
                         if px.is_some() && d.wants_bulk() {
                             d.attach_bulk(backend.open_bulk(&r.found)?);
                         }
@@ -426,7 +432,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                         applied: Applied::default(),
                         retry_at: now,
                         last_write: now - MIN_WRITE_GAP,
-                        screen_value: None,
+                        screen_value: Vec::new(),
                         screen_drawn: now,
                     });
                 }
@@ -494,7 +500,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
     let configs = inner.configs.clone();
     for r in inner.coolers.iter_mut() {
         if let (Some(d), Some(cfg)) = (r.driver.as_mut(), configs.get(&r.found.id)) {
-            if cfg.takeover && cfg.screen.mode == ScreenMode::Temperature {
+            if cfg.takeover && cfg.screen.shows_readings() {
                 let _ = d.set_screen(&ScreenSettings { mode: ScreenMode::Liquid, ..cfg.screen.clone() }, None);
             }
         }
@@ -516,7 +522,7 @@ impl Runtime {
             applied: self.applied.clone(),
             retry_at: self.retry_at,
             last_write: self.last_write,
-            screen_value: self.screen_value,
+            screen_value: self.screen_value.clone(),
             screen_drawn: self.screen_drawn,
         }
     }

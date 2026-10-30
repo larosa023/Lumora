@@ -1084,6 +1084,16 @@ body.cooler-view .shelf {
   box-shadow: 0 0 0 4px #1d1b29, 0 0 0 5px rgba(255, 255, 255, 0.1), 0 10px 28px rgba(0, 0, 0, 0.5);
 }
 
+.screen-preview {
+  position: relative;
+}
+
+.screen-preview img,
+.screen-preview .screen-face {
+  position: absolute;
+  inset: 0;
+}
+
 .screen-preview img {
   width: 100%;
   height: 100%;
@@ -1095,7 +1105,7 @@ body.cooler-view .shelf {
   color: #fff;
 }
 
-/* The number, centered as the screen draws it; turns with the rotation. */
+/* The numbers, centered as the screen draws them. */
 .screen-face {
   width: 100%;
   height: 100%;
@@ -1103,8 +1113,42 @@ body.cooler-view .shelf {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 6px;
   line-height: 1;
+}
+
+.screen-reading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.screen-face.two .screen-num b {
+  font-size: 22px;
+}
+
+.screen-face.two .screen-num sup {
+  font-size: 8px;
+}
+
+.screen-face.two small {
+  font-size: 6px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.cool-banner.compact {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 .screen-num {

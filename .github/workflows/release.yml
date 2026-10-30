@@ -58,6 +58,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-engine.ps1
 
+      - name: CPU temperature helper (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          cargo build --release -p lumora-sensors
+          New-Item -ItemType Directory -Force -Path src-tauri/engine/sensors | Out-Null
+          Copy-Item target/release/lumora-sensors.exe src-tauri/engine/sensors/
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,16 +6,17 @@ use lumora_core::cooling::{ScreenMode, ScreenSettings};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = args.get(1).cloned().unwrap_or_else(|| "screen.ppm".into());
-    let value = args.get(2).and_then(|v| v.parse().ok());
+    // One or two readings: "36" or "52,61".
+    let value: Vec<Option<i32>> = args.get(2).map(|v| v.split(',').map(|x| x.parse().ok()).collect()).unwrap_or_default();
     let s = ScreenSettings {
         mode: ScreenMode::Temperature,
         text_color: args.get(3).cloned().unwrap_or_else(|| "#ffffff".into()),
         background: args.get(4).map(|b| b.split(',').map(String::from).collect()).unwrap_or_else(|| vec!["#000000".into()]),
-        source: args.get(5).cloned().unwrap_or_else(|| "liquid".into()),
+        readings: args.get(5).map(|r| r.split(',').map(String::from).collect()).unwrap_or_else(|| vec!["liquid".into()]),
         ..Default::default()
     };
     let size = 640;
-    let img = render_temperature(&s, value, size);
+    let img = render_temperature(&s, &value, size);
     let mut ppm = format!("P6 {size} {size} 255\n").into_bytes();
     for px in img.chunks(4) {
         ppm.extend_from_slice(&px[..3]);
