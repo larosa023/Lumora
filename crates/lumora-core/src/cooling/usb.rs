@@ -27,8 +27,20 @@ const USBXPRESS_CLEAR_TO_SEND: u16 = 0x02;
 
 pub struct UsbBackend {
     /// A UsbDk context, once UsbDk is installed (Windows). Elsewhere a plain
-    /// context, which can open devices directly.
+    /// context, which can open devices directly. On Windows it only works in
+    /// a process with admin rights (UsbDk answers no one else).
     access: Option<Context>,
+    /// Key for the admin helper's relay (Windows), which reaches coolers
+    /// for the Lumora window. `None` in the helper itself.
+    relay_key: Option<String>,
+    /// How each reachable cooler was reached in the last look.
+    routes: std::collections::HashMap<String, Route>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Route {
+    Direct,
+    Relay,
 }
 
 fn io_err(e: rusb::Error) -> io::Error {
@@ -108,8 +120,9 @@ fn list(ctx: &Context) -> Vec<(String, u16, Device<Context>)> {
 }
 
 impl UsbBackend {
-    pub fn new() -> Self {
-        UsbBackend { access: access_context() }
+    /// `relay_key`: see [`super::relay`]; pass `None` in the admin helper.
+    pub fn new(relay_key: Option<String>) -> Self {
+        UsbBackend { access: access_context(), relay_key, routes: Default::default() }
     }
 }
 
@@ -137,7 +150,7 @@ pub fn report() -> String {
 
 impl Default for UsbBackend {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -171,7 +184,20 @@ impl Backend for UsbBackend {
         if self.access.is_none() {
             self.access = access_context();
         }
-        let reachable: Vec<String> = self.access.as_ref().map(|c| list(c).into_iter().map(|(id, _, _)| id).collect()).unwrap_or_default();
+        self.routes.clear();
+        for (id, _, _) in self.access.as_ref().map(list).unwrap_or_default() {
+            self.routes.insert(id, Route::Direct);
+        }
+        // Through the admin helper (the Lumora window can't use UsbDk itself).
+        let relay = self.relay_key.as_deref().map(|k| super::relay::reachable(super::relay::PORT, k));
+        if let Some(Ok(ids)) = &relay {
+            for id in ids {
+                self.routes.entry(id.clone()).or_insert(Route::Relay);
+            }
+        }
+        let helper_up = matches!(relay, Some(Ok(_)));
+        let usbdk_installed = !cfg!(windows) || crate::system::service_state("UsbDk").is_some();
+
         // Windows' own view lists every cooler plugged in, set up or not.
         // (Elsewhere the access context already sees everything.)
         let plugged: Vec<(String, u16)> = if cfg!(windows) {
@@ -182,32 +208,39 @@ impl Backend for UsbBackend {
         let mut out: Vec<FoundCooler> = plugged
             .iter()
             .map(|(id, pid)| {
-                let ok = reachable.contains(id);
+                let ok = self.routes.contains_key(id);
+                // Missing pieces are installed by the one-time setup: the UsbDk
+                // driver and, in the window, the admin helper that uses it.
+                let setup = !ok && (!usbdk_installed || (self.relay_key.is_some() && !helper_up));
+                let waiting = !ok && !setup;
                 FoundCooler {
                     id: id.clone(),
                     vid: CORSAIR_VID,
                     pid: *pid,
                     serial: String::new(),
-                    needs_setup: !ok && self.access.is_none(),
-                    // UsbDk is installed but can't see the cooler yet: it only
-                    // attaches to USB devices after a restart.
-                    needs_restart: !ok && self.access.is_some(),
-                    problem: (!ok && self.access.is_some()).then(usbdk_problem).flatten(),
+                    needs_setup: setup,
+                    // Everything is installed but the cooler isn't reachable
+                    // yet: usually a restart after the driver install.
+                    needs_restart: waiting,
+                    problem: waiting.then(usbdk_problem).flatten(),
                 }
             })
             .collect();
-        // Seen through UsbDk only (shouldn't happen, but never hide a cooler).
-        if let Some(c) = self.access.as_ref() {
-            for (id, pid, _) in list(c) {
-                if !out.iter().any(|f| f.id == id) {
-                    out.push(FoundCooler { id, vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: false, needs_restart: false, problem: None });
-                }
+        // Reachable but not in Windows' list (shouldn't happen): never hide it.
+        for (id, _) in self.routes.iter() {
+            if !out.iter().any(|f| &f.id == id) {
+                let pid = u16::from_str_radix(id.split(':').nth(2).unwrap_or("0"), 16).unwrap_or(0);
+                out.push(FoundCooler { id: id.clone(), vid: CORSAIR_VID, pid, serial: String::new(), needs_setup: false, needs_restart: false, problem: None });
             }
         }
         out
     }
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
+        if self.routes.get(&cooler.id) == Some(&Route::Relay) {
+            let key = self.relay_key.as_deref().unwrap_or_default();
+            return super::relay::Client::connect(super::relay::PORT, key)?.open(&cooler.id);
+        }
         let ctx = self.access.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "the USB access driver isn't set up"))?;
         let dev = list(ctx)
             .into_iter()

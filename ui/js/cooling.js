@@ -156,7 +156,7 @@ function askTakeover(c) {
   $('#coolerDialogTitle').textContent = c.needs_setup ? `Set up ${c.vendor} ${c.name}?` : `Let Lumora run ${c.name}?`;
   const running = `${app} is running right now. Quit it from the system tray first (and turn off its "start with Windows" option), or the two apps will keep overriding each other.`;
   if (c.needs_setup) {
-    $('#coolerDialogText').textContent = `Windows needs a small access driver (UsbDk) before Lumora can reach this cooler. It's installed once, after one Windows permission prompt, and it doesn't replace the cooler's own driver, so ${app} still works whenever Lumora isn't running the cooler.`;
+    $('#coolerDialogText').textContent = `Lumora needs the small UsbDk access driver and its own helper (which uses UsbDk with admin rights) to reach this cooler. One Windows permission prompt installs both, and neither replaces the cooler's own driver, so ${app} still works whenever Lumora isn't running the cooler.`;
     $('#coolerDialogKeep').textContent = c.owner_running ? running : `Then Lumora runs the ${parts(c)}. You can hand it back any time.`;
     go.textContent = 'Set up and run it';
   } else {
@@ -479,7 +479,7 @@ function setupHtml(c) {
   const app = c.owner_app || 'its own app';
   return `<div class="cool-page"><div class="hands-off static">
     <strong>One-time setup needed</strong>
-    <span>Windows needs a small access driver (UsbDk) before Lumora can reach this cooler. It doesn't replace the cooler's own driver, so ${ctx.esc(app)} still works whenever Lumora isn't running it.</span>
+    <span>Lumora needs two small pieces to reach this cooler: the UsbDk access driver and Lumora's helper, which uses it with admin rights (UsbDk only answers admin programs). One Windows permission prompt installs both. Neither replaces the cooler's own driver, so ${ctx.esc(app)} still works whenever Lumora isn't running it.</span>
     <button class="btn primary" data-takeover="on">Set up</button>
   </div></div>`;
 }

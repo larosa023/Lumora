@@ -348,8 +348,10 @@ impl EngineHost {
 
     /// Installs the UsbDk access driver that Corsair Hydro Pro coolers need on
     /// Windows. Unlike swapping the cooler's driver, UsbDk leaves iCUE working.
+    /// Also installs Lumora's admin helper, which reaches the cooler through
+    /// UsbDk for the Lumora window (UsbDk only answers admin programs).
     pub fn install_cooler_driver(self: &Arc<Self>) -> Result<(), String> {
-        if !cfg!(windows) || usbdk_installed() {
+        if !cfg!(windows) {
             return Ok(());
         }
         self.run_elevated("cooler-driver")
@@ -624,7 +626,7 @@ fn msi_log_errors(path: &Path) -> Option<String> {
     (!picked.is_empty()).then(|| picked.join(" / ").chars().take(400).collect())
 }
 
-fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
+fn elevated_cooler_driver(engine: &Path, user: &str) -> Result<(), String> {
     // A full-access engine must not grab the coolers once UsbDk can reach them.
     let config = installed_config_dir();
     let full_access = config.is_dir();
@@ -669,7 +671,9 @@ fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
     if full_access {
         let _ = quiet_ok("schtasks", &["/run", "/tn", TASK_NAME]);
     }
-    result
+    result?;
+    // The helper that relays the cooler to the Lumora window.
+    elevated_sensors(engine, user)
 }
 
 fn elevated_remove() -> Result<(), String> {
@@ -698,7 +702,7 @@ pub fn run_elevated_from_args() -> Option<i32> {
     let result = match action.as_str() {
         "install" => elevated_install(&engine, &user),
         "remove" => elevated_remove(),
-        "cooler-driver" => elevated_cooler_driver(&engine),
+        "cooler-driver" => elevated_cooler_driver(&engine, &user),
         "sensors" => elevated_sensors(&engine, &user),
         other => Err(format!("Unknown action {other}")),
     };

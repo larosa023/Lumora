@@ -657,6 +657,12 @@ pub fn run() {
             app.manage(host);
 
             let cooler_events = handle.clone();
+            // A fresh key for the admin helper's cooler relay, every start.
+            let relay_key = app
+                .path()
+                .app_config_dir()
+                .ok()
+                .and_then(|d| lumora_core::cooling::relay::new_key(&d.join("relay.key")).ok());
             let backend: Box<dyn lumora_core::cooling::Backend> = match std::env::var("LUMORA_FAKE_COOLER") {
                 // Pretend hardware for trying the cooling page: a Kraken Elite and
                 // an H115i Pro (`setup` makes the Corsair need its one-time setup).
@@ -667,7 +673,7 @@ pub fn run() {
                 }
                 Err(_) => Box::new(lumora_core::cooling::MultiBackend::new(vec![
                     Box::new(lumora_core::cooling::hid::HidBackend::new()),
-                    Box::new(lumora_core::cooling::usb::UsbBackend::new()),
+                    Box::new(lumora_core::cooling::usb::UsbBackend::new(relay_key.clone())),
                 ])),
             };
             let cooling = CoolingManager::new(

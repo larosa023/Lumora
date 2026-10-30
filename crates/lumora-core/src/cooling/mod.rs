@@ -19,6 +19,7 @@ pub mod hid;
 pub mod hydro;
 pub mod kraken;
 pub mod manager;
+pub mod relay;
 pub mod screen;
 #[cfg(feature = "usb")]
 pub mod usb;

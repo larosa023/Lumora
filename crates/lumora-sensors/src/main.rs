@@ -11,9 +11,15 @@
 //! error <what went wrong>
 //! ```
 //!
-//! It accepts no commands. Reading is done through PawnIO's own signed modules
-//! (`AMDFamily17.bin` for Ryzen, `IntelMSR.bin` for Intel), which only allow
-//! reads of a fixed set of harmless registers.
+//! Reading is done through PawnIO's own signed modules (`AMDFamily17.bin`
+//! for Ryzen, `IntelMSR.bin` for Intel), which only allow reads of a fixed
+//! set of harmless registers.
+//!
+//! It also relays Corsair Hydro Pro coolers for Lumora on `127.0.0.1:6745`
+//! (see `lumora_core::cooling::relay`): the UsbDk driver those coolers need
+//! only answers programs with admin rights. The relay only signs in Lumora
+//! (by a random key Lumora writes in the user's settings folder) and only
+//! reaches supported coolers.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -194,6 +200,14 @@ mod win {
     pub fn main() {
         // One copy at a time: a second one can't take the port and leaves.
         let Ok(listener) = TcpListener::bind(("127.0.0.1", super::PORT)) else { return };
+
+        // The cooler relay, beside the temperature.
+        if let Some(key_file) = lumora_core::cooling::relay::default_key_file() {
+            std::thread::spawn(move || {
+                let backend = lumora_core::cooling::usb::UsbBackend::new(None);
+                lumora_core::cooling::relay::run(Box::new(backend), key_file);
+            });
+        }
         let line = Arc::new(Mutex::new(String::from("error starting\n")));
 
         let reading = line.clone();
