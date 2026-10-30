@@ -533,6 +533,24 @@ fn elevated_install(engine: &Path, user: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The interesting lines of a Windows Installer log (written as UTF-16).
+fn msi_log_errors(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = if bytes.starts_with(&[0xFF, 0xFE]) {
+        let words: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&words)
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("Error 1") || l.contains("Error 2") || l.contains("CustomAction") && l.contains("returned actual error"))
+        .map(str::trim)
+        .collect();
+    let picked: Vec<&str> = lines.iter().rev().take(2).rev().copied().collect();
+    (!picked.is_empty()).then(|| picked.join(" / ").chars().take(400).collect())
+}
+
 fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
     // A full-access engine must not grab the coolers once UsbDk can reach them.
     let config = installed_config_dir();
@@ -549,12 +567,23 @@ fn elevated_cooler_driver(engine: &Path) -> Result<(), String> {
             Err("The UsbDk driver installer is missing from this copy of Lumora".to_string())
         } else {
             let msi = msi.display().to_string();
-            let code = hidden(Command::new("msiexec").args(["/i", msi.as_str(), "/qn", "/norestart"])).status().ok().and_then(|s| s.code());
+            let log = std::env::temp_dir().join("lumora-usbdk-install.log");
+            let log_arg = log.display().to_string();
+            let code = hidden(Command::new("msiexec").args(["/i", msi.as_str(), "/qn", "/norestart", "/l*v", log_arg.as_str()]))
+                .status()
+                .ok()
+                .and_then(|s| s.code());
             // 3010 and 1641: installed, a restart finishes the job.
             if matches!(code, Some(0 | 3010 | 1641)) || usbdk_installed() {
                 Ok(())
             } else {
-                Err(format!("Couldn't install the UsbDk driver (code {})", code.unwrap_or(-1)))
+                let code = code.unwrap_or(-1);
+                let why = match code {
+                    1618 => " Another installation is running; try again when it finishes.".to_string(),
+                    1625 | 1643 => " A Windows policy blocks driver installs on this PC.".to_string(),
+                    _ => msi_log_errors(&log).map(|e| format!(" Windows says: {e}")).unwrap_or_default(),
+                };
+                Err(format!("Couldn't install the UsbDk driver (code {code}).{why}"))
             }
         }
     };

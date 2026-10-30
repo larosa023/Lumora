@@ -115,7 +115,9 @@ function askTakeover(c) {
       } catch (err) {
         go.disabled = false;
         go.textContent = 'Try again';
-        return ctx.toast(String(err));
+        // Keep the reason on screen (a toast is gone before anyone can read it).
+        $('#coolerDialogKeep').textContent = `Setup didn't finish: ${String(err)}`;
+        return;
       }
       ctx.toast('Access driver installed. If the cooler doesn\'t connect within a minute, restart your PC once.');
     }
@@ -303,11 +305,12 @@ export function renderPage(c) {
     body.innerHTML = setupHtml(c);
     return;
   }
+  const owner = c.owner_running
+    ? `<div class="cool-banner">${ctx.esc(c.owner_app)} is running and will keep overriding Lumora. Quit it fully: right-click its icon in the system tray and choose Exit.</div>`
+    : '';
   const banner = c.state === 'error'
-    ? `<div class="cool-banner error">${ctx.esc(c.message)}</div>`
-    : c.owner_running
-      ? `<div class="cool-banner">${ctx.esc(c.owner_app)} is running and will keep overriding Lumora. Quit it from the system tray.</div>`
-      : c.state === 'connecting' ? '<div class="cool-banner">Connecting to the cooler…</div>' : '';
+    ? `<div class="cool-banner error">${ctx.esc(c.message)}</div>${owner}`
+    : owner || (c.state === 'connecting' ? '<div class="cool-banner">Connecting to the cooler…</div>' : '');
   body.innerHTML = `<div class="cool-page">
     ${banner}
     ${readouts(c)}

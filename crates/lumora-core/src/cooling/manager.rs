@@ -123,12 +123,35 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// Curves are written whole; spacing writes out keeps the firmware happy.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(800);
 
-/// The process names each owner app runs as.
+/// How each owner app's processes start (`NZXT CAM.exe`, `iCUE.exe`, and
+/// helpers that share the name).
 fn owner_processes(app: &str) -> &'static [&'static str] {
     match app {
-        "NZXT CAM" => &["nzxt cam.exe", "nzxt cam"],
-        "Corsair iCUE" => &["icue.exe", "icue"],
+        "NZXT CAM" => &["nzxt cam"],
+        "Corsair iCUE" => &["icue"],
         _ => &[],
+    }
+}
+
+fn owner_is_running(app: &str, running: &HashSet<String>) -> bool {
+    owner_processes(app).iter().any(|stem| running.iter().any(|p| p.starts_with(stem)))
+}
+
+/// Windows refuses writes when another app opened the cooler without sharing
+/// it, which shows up as "Access is denied".
+fn is_locked(e: &std::io::Error) -> bool {
+    let text = e.to_string();
+    e.kind() == std::io::ErrorKind::PermissionDenied || text.contains("os error 5") || text.contains("Access is denied")
+}
+
+fn open_error_message(e: &std::io::Error, owner: Option<&str>) -> String {
+    let app = owner.unwrap_or("another app");
+    if is_locked(e) {
+        format!("Another app has the cooler locked, usually {app}, even when it's only in the system tray. Quit it fully (right-click its tray icon, then Exit, or end it in Task Manager). Lumora reconnects by itself.")
+    } else if e.kind() == std::io::ErrorKind::TimedOut {
+        format!("The cooler isn't answering. {app} may be using it.")
+    } else {
+        format!("Couldn't open the cooler: {e}")
     }
 }
 
@@ -203,7 +226,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 vendor: r.model.vendor().into(),
                 owner_app: owner.map(String::from),
                 owner_running: owner.is_some_and(|a| {
-                    owner_processes(a).iter().any(|p| inner.running_apps.contains(*p))
+                    owner_is_running(a, &inner.running_apps)
                 }),
                 takeover: cfg.takeover,
                 state: r.state,
@@ -263,10 +286,7 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
             }
             Err(e) => {
                 r.state = CoolerState::Error;
-                r.message = match e.kind() {
-                    std::io::ErrorKind::TimedOut => "The cooler isn't answering. Another app may be using it.".into(),
-                    _ => format!("Couldn't open the cooler: {e}"),
-                };
+                r.message = open_error_message(&e, owner_app(r.found.vid));
                 r.retry_at = now + RETRY_AFTER;
                 return;
             }
@@ -529,7 +549,7 @@ mod tests {
         configs.insert("hid:1e71:3012:FAKE0001".to_string(), CoolerConfig { takeover: true, ..Default::default() });
         let m = manager(backend, configs, &[]);
         wait("error", || m.views().first().is_some_and(|v| v.state == CoolerState::Error));
-        assert!(m.views()[0].message.contains("Another app"));
+        assert!(m.views()[0].message.contains("isn't answering"));
         dev.lock().unwrap().busy = false;
         wait("recovered", || m.views()[0].state == CoolerState::Active);
     }
@@ -588,5 +608,15 @@ mod tests {
         assert_eq!(dev.lock().unwrap().writes, 0);
         dev.lock().unwrap().needs_setup = false;
         wait("active after setup", || m.views()[0].state == CoolerState::Active);
+    }
+
+    #[test]
+    fn access_denied_points_at_the_vendor_app() {
+        let e = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Access is denied. (os error 5)");
+        let msg = open_error_message(&e, Some("NZXT CAM"));
+        assert!(msg.contains("locked") && msg.contains("NZXT CAM"), "{msg}");
+        let running: HashSet<String> = ["nzxt cam.exe".to_string()].into();
+        assert!(owner_is_running("NZXT CAM", &running));
+        assert!(!owner_is_running("Corsair iCUE", &running));
     }
 }
