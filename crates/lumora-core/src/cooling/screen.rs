@@ -7,6 +7,7 @@
 
 use std::io;
 
+use super::glyphs;
 use super::{ScreenMode, ScreenSettings};
 
 fn parse_hex(c: &str) -> [u8; 3] {
@@ -45,6 +46,85 @@ pub fn render_colors(colors: &[String], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
+/// Draws `text` onto RGBA `img` (`size` wide), its top-left at `(x, y)`,
+/// `h` pixels tall, in `color`.
+fn draw_text(img: &mut [u8], size: usize, text: &str, x: f32, y: f32, h: f32, gap: f32, color: [u8; 3], alpha: f32) {
+    let stroke = (h * 0.13).max(1.5);
+    let mut segs: Vec<((f32, f32), (f32, f32))> = Vec::new();
+    let mut pen = x;
+    for c in text.chars() {
+        let (strokes, w) = glyphs::glyph(c);
+        for pl in strokes {
+            for pair in pl.windows(2) {
+                let p = |q: (f32, f32)| (pen + q.0 * h, y + q.1 * h);
+                segs.push((p(pair[0]), p(pair[1])));
+            }
+        }
+        pen += (w + gap) * h;
+    }
+    if segs.is_empty() {
+        return;
+    }
+    let half = stroke / 2.0;
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &((ax, ay), (bx, by)) in &segs {
+        x0 = x0.min(ax.min(bx));
+        y0 = y0.min(ay.min(by));
+        x1 = x1.max(ax.max(bx));
+        y1 = y1.max(ay.max(by));
+    }
+    let clamp = |v: f32| (v.max(0.0) as usize).min(size.saturating_sub(1));
+    for py in clamp(y0 - half - 1.0)..=clamp(y1 + half + 1.0) {
+        for px in clamp(x0 - half - 1.0)..=clamp(x1 + half + 1.0) {
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let mut d = f32::MAX;
+            for &((ax, ay), (bx, by)) in &segs {
+                let (vx, vy) = (bx - ax, by - ay);
+                let len = vx * vx + vy * vy;
+                let t = if len > 0.0 { (((fx - ax) * vx + (fy - ay) * vy) / len).clamp(0.0, 1.0) } else { 0.0 };
+                let (dx, dy) = (fx - (ax + t * vx), fy - (ay + t * vy));
+                d = d.min(dx * dx + dy * dy);
+            }
+            let cover = (half - d.sqrt() + 0.5).clamp(0.0, 1.0) * alpha;
+            if cover > 0.0 {
+                let o = (py * size + px) * 4;
+                for k in 0..3 {
+                    img[o + k] = (img[o + k] as f32 * (1.0 - cover) + color[k] as f32 * cover).round() as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Width of `text` drawn `h` pixels tall.
+fn text_width(text: &str, h: f32, gap: f32) -> f32 {
+    let n = text.chars().count() as f32;
+    text.chars().map(|c| glyphs::glyph(c).1).sum::<f32>() * h + gap * h * (n - 1.0).max(0.0)
+}
+
+/// Lumora's own temperature screen: the reading in big digits over the
+/// background colors, with a small label underneath.
+pub fn render_temperature(s: &ScreenSettings, value: Option<i32>, size: usize) -> Vec<u8> {
+    let mut img = render_colors(&s.background, size, size);
+    let color = parse_hex(&s.text_color);
+    let f = size as f32;
+    let digits = value.map_or("--".to_string(), |v| v.clamp(-99, 199).to_string());
+    let h = f * 0.30;
+    let gap = 0.22;
+    let w = text_width(&digits, h, gap);
+    let deg_h = h * 0.32;
+    let total = w + deg_h * 0.35 + text_width("°C", deg_h, 0.18);
+    let x = (f - total) / 2.0;
+    let y = f * 0.5 - h * 0.62;
+    draw_text(&mut img, size, &digits, x, y, h, gap, color, 1.0);
+    draw_text(&mut img, size, "°C", x + w + deg_h * 0.35, y + h * 0.02, deg_h, 0.18, color, 0.85);
+    let label = if s.source == "gpu" { "GPU" } else { "LIQUID" };
+    let lh = f * 0.055;
+    let lw = text_width(label, lh, 0.55);
+    draw_text(&mut img, size, label, (f - lw) / 2.0, y + h * 1.2, lh, 0.55, color, 0.7);
+    img
+}
+
 /// Turns RGBA pixels into the screen's layout, rotated clockwise by
 /// `rotation` degrees (0, 90, 180 or 270). The picture must be square.
 pub fn to_device(rgba: &[u8], size: usize, rotation: u16) -> Vec<u8> {
@@ -70,9 +150,10 @@ pub fn to_device(rgba: &[u8], size: usize, rotation: u16) -> Vec<u8> {
 
 /// The pixels to upload for these settings, or `None` when the screen shows
 /// something built in.
-pub fn pixels(s: &ScreenSettings, size: usize) -> io::Result<Option<Vec<u8>>> {
+pub fn pixels(s: &ScreenSettings, size: usize, value: Option<i32>) -> io::Result<Option<Vec<u8>>> {
     let rgba = match s.mode {
         ScreenMode::Color => render_colors(&s.colors, size, size),
+        ScreenMode::Temperature => render_temperature(s, value, size),
         ScreenMode::Image => {
             let path = s.image.as_deref().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no picture chosen"))?;
             let data = std::fs::read(path)?;
@@ -109,5 +190,23 @@ mod tests {
         let same = to_device(&src, 2, 0);
         assert_eq!(&same[0..4], &[255, 0, 0, 0]);
         assert_eq!(to_device(&to_device(&src, 2, 180), 2, 180)[12..15], [255, 255, 255]);
+    }
+
+    #[test]
+    fn temperature_screen_draws_digits_in_the_text_color() {
+        let s = ScreenSettings {
+            mode: ScreenMode::Temperature,
+            text_color: "#00ff00".into(),
+            background: vec!["#000000".into()],
+            ..Default::default()
+        };
+        let img = render_temperature(&s, Some(36), 200);
+        let green = img.chunks(4).filter(|p| p[1] > 200 && p[0] < 40).count();
+        assert!(green > 400, "digits drawn ({green} px)");
+        // Corners stay background.
+        assert_eq!(&img[0..3], &[0, 0, 0]);
+        // The middle column of a "36" is between the digits, mostly empty.
+        let blank = render_temperature(&s, None, 200);
+        assert_ne!(img, blank);
     }
 }

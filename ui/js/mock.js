@@ -42,7 +42,7 @@ const kraken = {
     { id: 'pump', name: 'Pump', min_duty: 20, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
     { id: 'fan', name: 'Radiator fans', min_duty: 0, kind: 'curve', setting: { mode: 'preset', preset: 'balanced' } },
   ],
-  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0, colors: ['#7c5cff', '#00d2ff'], image: null } },
+  screen: { width: 640, height: 640, settings: { mode: 'liquid', brightness: 80, rotation: 0, colors: ['#7c5cff', '#00d2ff'], image: null, text_color: '#ffffff', background: ['#000000'], source: 'liquid' } },
   light: null, needs_setup: false, notice: '',
 };
 // `?corsair-setup` shows the one-time setup step.

@@ -12,6 +12,7 @@
 
 pub mod curve;
 pub mod fake;
+pub mod glyphs;
 pub mod family;
 #[cfg(feature = "hid")]
 pub mod hid;
@@ -127,6 +128,8 @@ pub enum ScreenMode {
     Color,
     /// A picture the user chose.
     Image,
+    /// Lumora's own live temperature screen, in the user's colors.
+    Temperature,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,6 +145,11 @@ pub struct ScreenSettings {
     /// Picture for [`ScreenMode::Image`]: a file of raw RGBA pixels at the
     /// screen's size, saved by the app. A new pick gets a new file name.
     pub image: Option<String>,
+    /// [`ScreenMode::Temperature`]: digit color, background (one to three
+    /// colors, blended) and which reading to show (`liquid` or `gpu`).
+    pub text_color: String,
+    pub background: Vec<String>,
+    pub source: String,
 }
 
 impl Default for ScreenSettings {
@@ -152,6 +160,9 @@ impl Default for ScreenSettings {
             rotation: 0,
             colors: vec!["#7c5cff".into(), "#00d2ff".into()],
             image: None,
+            text_color: "#ffffff".into(),
+            background: vec!["#000000".into()],
+            source: "liquid".into(),
         }
     }
 }

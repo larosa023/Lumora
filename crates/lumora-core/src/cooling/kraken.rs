@@ -51,6 +51,9 @@ const BULK_CHUNK: usize = 2 * 1024 * 1024;
 pub struct Kraken {
     io: Box<dyn Link>,
     bulk: Option<Box<dyn Bulk>>,
+    /// Picture slots cleared since connecting, and the one showing.
+    slots_ready: bool,
+    shown_slot: Option<u8>,
     pub model: &'static KrakenModel,
     pub firmware: Option<(u8, u8, u8)>,
     pub brightness: u8,
@@ -64,7 +67,7 @@ fn err(msg: impl Into<String>) -> io::Error {
 
 impl Kraken {
     pub fn new(io: Box<dyn Link>, model: &'static KrakenModel) -> Self {
-        Kraken { io, bulk: None, model, firmware: None, brightness: 50, orientation: 0 }
+        Kraken { io, bulk: None, slots_ready: false, shown_slot: None, model, firmware: None, brightness: 50, orientation: 0 }
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
@@ -187,60 +190,44 @@ impl Kraken {
         Ok(self.read_until(&[0x33, 0x02])?.get(14) == Some(&1))
     }
 
-    /// A bucket that is free to write: deleted once if it was empty, twice if
-    /// it held something, skipping buckets that refuse to be deleted.
-    fn prepare_bucket(&mut self, mut i: u8, mut filled: bool) -> io::Result<u8> {
-        loop {
-            if i >= BUCKETS {
-                return Err(err("no free picture slot on the screen"));
-            }
-            if !self.delete_bucket(i)? {
-                i += 1;
-                filled = true;
-            } else if filled {
-                filled = false;
-            } else {
-                return Ok(i);
-            }
-        }
-    }
-
     fn switch_bucket(&mut self, i: u8, mode: u8) -> io::Result<bool> {
         Ok(self.ask(&[0x38, 0x01, mode, i])?.get(14) == Some(&1))
     }
 
     /// Stores `pixels` (already in the screen's layout) and shows them.
+    ///
+    /// Lumora uses two picture slots and swaps between them: the new picture
+    /// goes into the slot that isn't showing, then the screen switches over,
+    /// so redraws never flicker. Before the first picture, every slot is
+    /// cleared, so leftovers (from NZXT CAM, say) can't overlap them.
     pub fn show_picture(&mut self, pixels: &[u8]) -> io::Result<()> {
         if self.bulk.is_none() {
             return Err(io::Error::new(io::ErrorKind::NotConnected, "the screen's picture connection isn't open"));
         }
         self.drain()?;
-        self.ask(&[0x36, 0x03])?;
-        let mut buckets = Vec::with_capacity(BUCKETS as usize);
-        for i in 0..BUCKETS {
-            buckets.push(self.ask(&[0x30, 0x04, i])?);
-        }
-        let free = buckets.iter().position(|b| b.get(15..).is_none_or(|rest| rest.iter().all(|&x| x == 0)));
-        let mut index = self.prepare_bucket(free.unwrap_or(0) as u8, free.is_none())?;
-
         let mut header = vec![0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10];
         // Picture type 2 (still image), then its length.
         header.extend([0x02, 0x00, 0x00, 0x00]);
         header.extend((pixels.len() as u32).to_le_bytes());
         let size_kib = (header.len() + pixels.len()).div_ceil(1024);
-        let start = match bucket_memory_start(&buckets, index as usize, size_kib) {
-            Some(s) => s,
-            None => {
-                // Full: back to the built-in screen and clear every slot.
-                self.switch_bucket(0, 2)?;
-                for i in 0..BUCKETS {
-                    self.delete_bucket(i)?;
-                }
-                index = 0;
-                0
+        if 2 * size_kib > LCD_MEMORY_KIB {
+            return Err(err("the picture is too big for the screen's memory"));
+        }
+
+        if !self.slots_ready {
+            self.switch_bucket(0, 2)?;
+            self.shown_slot = None;
+            for i in 0..BUCKETS {
+                self.delete_bucket(i)?;
             }
-        };
-        let start = (start as u16).to_le_bytes();
+            self.slots_ready = true;
+        }
+        let index: u8 = if self.shown_slot == Some(0) { 1 } else { 0 };
+        // Deleting twice clears a slot that held something.
+        self.delete_bucket(index)?;
+        self.delete_bucket(index)?;
+        self.ask(&[0x36, 0x03])?;
+        let start = ((index as usize * size_kib) as u16).to_le_bytes();
         let size = (size_kib as u16).to_le_bytes();
         let setup = self.ask(&[0x32, 0x01, index, index + 1, start[0], start[1], size[0], size[1], 0x01])?;
         if setup.get(14) != Some(&1) {
@@ -256,11 +243,13 @@ impl Kraken {
         if !self.switch_bucket(index, 0x04)? {
             return Err(err("the screen didn't switch to the new picture"));
         }
+        self.shown_slot = Some(index);
         Ok(())
     }
 
     /// Shows the cooler's built-in liquid temperature screen.
     pub fn show_liquid_temperature(&mut self) -> io::Result<bool> {
+        self.shown_slot = None;
         self.write(&[0x38, 0x01, 0x02, 0x00])?;
         let reply = self.read_reply()?;
         Ok(reply.get(14) == Some(&1))
@@ -308,39 +297,4 @@ impl Driver for Kraken {
     fn attach_bulk(&mut self, bulk: Box<dyn Bulk>) {
         self.bulk = Some(bulk);
     }
-}
-
-/// Where in screen memory a picture of `size_kib` can go for `index`: its old
-/// place if it fits and overlaps nothing, otherwise after everything stored,
-/// otherwise at the very start. `None` means the memory has to be cleared.
-fn bucket_memory_start(buckets: &[Vec<u8>], index: usize, size_kib: usize) -> Option<usize> {
-    let field = |b: &Vec<u8>, at: usize| b.get(at..at + 2).map_or(0, |v| u16::from_le_bytes([v[0], v[1]]) as usize);
-    let current = &buckets[index];
-    let (cur_start, cur_size) = (field(current, 17), field(current, 19));
-    if size_kib <= cur_size {
-        return Some(cur_start);
-    }
-    let mut lowest = cur_start;
-    let mut highest = 0;
-    let mut overlaps = false;
-    for (i, b) in buckets.iter().enumerate() {
-        let (start, len) = (field(b, 17), field(b, 19));
-        let end = start + len;
-        highest = highest.max(end);
-        lowest = lowest.min(start);
-        let other = i != index && len > 0;
-        if other && start < cur_start + size_kib && end > cur_start {
-            overlaps = true;
-        }
-    }
-    if !overlaps {
-        return Some(cur_start);
-    }
-    if highest + size_kib < LCD_MEMORY_KIB {
-        return Some(highest);
-    }
-    if size_kib < lowest {
-        return Some(0);
-    }
-    None
 }

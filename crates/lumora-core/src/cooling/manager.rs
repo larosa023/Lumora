@@ -89,6 +89,9 @@ struct Runtime {
     applied: Applied,
     retry_at: Instant,
     last_write: Instant,
+    /// The number on Lumora's own temperature screen, and when it was drawn.
+    screen_value: Option<i32>,
+    screen_drawn: Instant,
 }
 
 /// Lists running vendor apps (process names), injected so tests don't depend
@@ -117,7 +120,7 @@ impl Shared {
 
 pub struct CoolingManager {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 const POLL: Duration = Duration::from_secs(1);
@@ -126,6 +129,11 @@ const OWNER_CHECK_EVERY: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// Curves are written whole; spacing writes out keeps the firmware happy.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(800);
+/// Lumora's own temperature screen is redrawn at most this often.
+const LIVE_SCREEN_EVERY: Duration = Duration::from_secs(10);
+/// The shown number only changes when the reading moves this far from it,
+/// so a reading sitting on x.5 doesn't flip back and forth.
+const LIVE_HYSTERESIS: f32 = 0.7;
 
 /// How each owner app's processes start (`NZXT CAM.exe`, `iCUE.exe`, and
 /// helpers that share the name).
@@ -172,7 +180,7 @@ impl CoolingManager {
             .name("lumora-cooling".into())
             .spawn(move || run(s, backend, owner_check))
             .expect("spawn cooling thread");
-        CoolingManager { shared, thread: Some(thread) }
+        CoolingManager { shared, thread: Mutex::new(Some(thread)) }
     }
 
     pub fn views(&self) -> Vec<CoolerView> {
@@ -189,10 +197,13 @@ impl CoolingManager {
         self.shared.wake.notify_all();
     }
 
-    pub fn shutdown(&mut self) {
+    /// Stops the cooling thread. Screens showing Lumora's own temperature go
+    /// back to the cooler's built-in one, so no stale number is left behind.
+    pub fn shutdown(&self) {
         self.shared.stop.store(true, Ordering::SeqCst);
         self.shared.wake.notify_all();
-        if let Some(t) = self.thread.take() {
+        let thread = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(t) = thread {
             let _ = t.join();
         }
     }
@@ -314,6 +325,16 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     }
 
     let want = desired(&r.model, cfg);
+    // Lumora's own temperature screen: the number to show right now.
+    let live = want.screen.as_ref().filter(|s| s.mode == ScreenMode::Temperature).map(|s| {
+        let reading = if s.source == "gpu" { temps::get("gpu") } else { r.status.as_ref().and_then(|st| st.liquid_c) };
+        match (reading, r.screen_value) {
+            (Some(t), Some(shown)) if (t - shown as f32).abs() < LIVE_HYSTERESIS => Some(shown),
+            (Some(t), _) => Some(t.round() as i32),
+            (None, _) => None,
+        }
+    });
+    let live_due = live.is_some_and(|v| v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY);
     let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
         if r.applied != want && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
@@ -321,12 +342,15 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
             if let Some((ch, setting)) = want.speeds.iter().find(|(ch, s)| r.applied.speeds.get(*ch) != Some(s)) {
                 d.set_speed(ch, setting)?;
                 r.applied.speeds.insert(ch.clone(), setting.clone());
-            } else if want.screen != r.applied.screen {
+            } else if want.screen != r.applied.screen || live_due {
                 if let Some(s) = &want.screen {
                     let size = r.model.screen().map_or(0, |(w, _)| w as usize);
-                    let picture = matches!(s.mode, ScreenMode::Color | ScreenMode::Image);
+                    let picture = matches!(s.mode, ScreenMode::Color | ScreenMode::Image | ScreenMode::Temperature);
+                    let value = live.flatten();
+                    r.screen_value = value;
+                    r.screen_drawn = Instant::now();
                     let shown = (|| -> std::io::Result<()> {
-                        let px = super::screen::pixels(s, size)?;
+                        let px = super::screen::pixels(s, size, value)?;
                         if px.is_some() && d.wants_bulk() {
                             d.attach_bulk(backend.open_bulk(&r.found)?);
                         }
@@ -402,6 +426,8 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                         applied: Applied::default(),
                         retry_at: now,
                         last_write: now - MIN_WRITE_GAP,
+                        screen_value: None,
+                        screen_drawn: now,
                     });
                 }
             }
@@ -461,6 +487,18 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
             let _ = shared.wake.wait_timeout(guard, POLL);
         }
     }
+
+    // Lumora's temperature screen can't update without Lumora: hand those
+    // screens back to the cooler's own live display.
+    let mut inner = shared.lock();
+    let configs = inner.configs.clone();
+    for r in inner.coolers.iter_mut() {
+        if let (Some(d), Some(cfg)) = (r.driver.as_mut(), configs.get(&r.found.id)) {
+            if cfg.takeover && cfg.screen.mode == ScreenMode::Temperature {
+                let _ = d.set_screen(&ScreenSettings { mode: ScreenMode::Liquid, ..cfg.screen.clone() }, None);
+            }
+        }
+    }
 }
 
 impl Runtime {
@@ -478,6 +516,8 @@ impl Runtime {
             applied: self.applied.clone(),
             retry_at: self.retry_at,
             last_write: self.last_write,
+            screen_value: self.screen_value,
+            screen_drawn: self.screen_drawn,
         }
     }
 }
@@ -716,5 +756,31 @@ mod tests {
         drop(m);
         assert_eq!(sync_hex(crate::Rgb { r: 250, g: 10, b: 120 }), "#f80878");
         assert_eq!(sync_hex(crate::Rgb { r: 255, g: 3, b: 0 }), "#ff0000");
+    }
+
+    #[test]
+    fn lumora_temperature_screen_swaps_slots_and_hands_back_on_exit() {
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        cfg.screen.mode = ScreenMode::Temperature;
+        cfg.screen.text_color = "#00ff00".into();
+        m.set_config(&id, cfg.clone());
+        wait("drawn", || dev.lock().unwrap().shown_bucket.is_some());
+        let first = dev.lock().unwrap().shown_bucket;
+        {
+            let d = dev.lock().unwrap();
+            let green = d.bulk[20..].chunks(4).filter(|p| p[1] > 200 && p[0] < 40).count();
+            assert!(green > 1000, "digits in the text color ({green} px)");
+        }
+        // A settings change redraws into the other slot.
+        cfg.screen.background = vec!["#202020".into()];
+        m.set_config(&id, cfg);
+        wait("other slot", || dev.lock().unwrap().shown_bucket.is_some_and(|b| Some(b) != first));
+        m.shutdown();
+        let d = dev.lock().unwrap();
+        assert!(d.liquid_screen && d.shown_bucket.is_none(), "back to the built-in screen");
     }
 }

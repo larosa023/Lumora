@@ -1090,22 +1090,47 @@ body.cooler-view .shelf {
   object-fit: cover;
 }
 
-.screen-preview.liquid {
-  grid-auto-flow: column;
-  align-items: baseline;
-  gap: 2px;
+.screen-preview.builtin {
   background: radial-gradient(circle at 50% 40%, #1a1830, #050508);
   color: #fff;
 }
 
-.screen-preview.liquid b {
-  font-size: 30px;
-  font-weight: 600;
+/* The number, centered as the screen draws it; turns with the rotation. */
+.screen-face {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1;
 }
 
-.screen-preview.liquid small {
-  font-size: 12px;
-  color: #8f8ca6;
+.screen-num {
+  display: flex;
+  align-items: flex-start;
+  /* The degree sign shouldn't push the digits off center. */
+  padding-left: 14px;
+}
+
+.screen-num b {
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.screen-num sup {
+  font-size: 11px;
+  margin: 3px 0 0 2px;
+  width: 12px;
+  opacity: 0.85;
+}
+
+.screen-face small {
+  font-size: 7.5px;
+  letter-spacing: 0.3em;
+  opacity: 0.7;
 }
 
 .screen-preview.empty span {

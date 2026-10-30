@@ -730,6 +730,9 @@ pub fn run() {
             if let Some(host) = handle.try_state::<Arc<EngineHost>>() {
                 host.stop_child();
             }
+            if let Some(cooling) = handle.try_state::<CoolingManager>() {
+                cooling.shutdown();
+            }
         }
     });
 }

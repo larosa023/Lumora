@@ -8,7 +8,7 @@ const PRESETS = [
 ];
 const T0 = 20, T1 = 59, TMAX = 60;
 const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
-const SCREEN_MODES = [['liquid', 'Temperature'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
+const SCREEN_MODES = [['temperature', 'Temperature'], ['liquid', 'NZXT built-in'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
 const PALETTE = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400', '#3ddc97'];
 // Quick picks on the fan lighting card; everything else is one click away.
 const FAN_EFFECTS = ['static', 'breathing', 'spectrum', 'color_wave', 'rainbow_wave', 'temperature'];
@@ -257,11 +257,22 @@ function swatchesHtml(colors, max, kind) {
 function screenPreview(c) {
   const s = c.screen.settings;
   const turn = `transform: rotate(${s.rotation || 0}deg)`;
-  if (s.mode === 'color') {
-    const cols = (s.colors || []).slice(0, 3);
-    const bg = cols.length > 1 ? `linear-gradient(135deg, ${cols.join(', ')})` : cols[0] || '#7c5cff';
-    return `<div class="screen-preview" style="background:${ctx.esc(bg)}"></div>`;
+  const blend = (cols, fallback) => {
+    const list = (cols || []).slice(0, 3);
+    return list.length > 1 ? `linear-gradient(135deg, ${list.join(', ')})` : list[0] || fallback;
+  };
+  const reading = () => {
+    const t = s.source === 'gpu' ? ctx.state.app.temps?.find((x) => x.source === 'gpu')?.celsius : c.status?.liquid_c;
+    return t == null ? '--' : Math.round(t);
+  };
+  if (s.mode === 'temperature') {
+    return `<div class="screen-preview" style="background:${ctx.esc(blend(s.background, '#000'))}">
+      <div class="screen-face" style="${turn}; color:${ctx.esc(s.text_color || '#fff')}">
+        <span class="screen-num"><b>${reading()}</b><sup>°C</sup></span>
+        <small>${s.source === 'gpu' ? 'GPU' : 'LIQUID'}</small>
+      </div></div>`;
   }
+  if (s.mode === 'color') return `<div class="screen-preview" style="background:${ctx.esc(blend(s.colors, '#7c5cff'))}"></div>`;
   if (s.mode === 'image') {
     const p = loadPreview(c.id);
     return p
@@ -269,8 +280,9 @@ function screenPreview(c) {
       : '<div class="screen-preview empty"><span>Your picture</span></div>';
   }
   if (s.mode === 'liquid') {
-    const t = c.status?.liquid_c;
-    return `<div class="screen-preview liquid"><b>${t == null ? '–' : Math.round(t)}</b><small>°C</small></div>`;
+    return `<div class="screen-preview builtin"><div class="screen-face" style="${turn}">
+      <span class="screen-num"><b>${c.status?.liquid_c == null ? '--' : Math.round(c.status.liquid_c)}</b><sup>°C</sup></span>
+    </div></div>`;
   }
   return '<div class="screen-preview empty"><span>Unchanged</span></div>';
 }
@@ -280,7 +292,24 @@ function screenHtml(c) {
   const s = c.screen.settings;
   const modes = SCREEN_MODES.map(([v, l]) => `<button role="radio" data-screen-mode="${v}" aria-checked="${s.mode === v}">${l}</button>`).join('');
   const rot = [0, 90, 180, 270].map((r) => `<button role="radio" data-rotate="${r}" aria-checked="${s.rotation === r}">${r}°</button>`).join('');
-  const extra = s.mode === 'color'
+  const extra = s.mode === 'temperature'
+    ? `<div class="control">
+        <div class="control-label"><span>Shows</span></div>
+        <div class="segmented compact" role="radiogroup" aria-label="Temperature shown">
+          <button role="radio" data-screen-source="liquid" aria-checked="${s.source !== 'gpu'}">Liquid</button>
+          <button role="radio" data-screen-source="gpu" aria-checked="${s.source === 'gpu'}">Graphics card</button>
+        </div>
+      </div>
+      <div class="control">
+        <div class="control-label"><span>Number color</span></div>
+        <div class="light-colors"><label class="light-swatch" style="--c:${ctx.esc(s.text_color || '#ffffff')}">
+          <input type="color" data-screen-text value="${ctx.esc(s.text_color || '#ffffff')}" aria-label="Number color"></label></div>
+      </div>
+      <div class="control">
+        <div class="control-label"><span>Background</span><small>up to 3, blended</small></div>
+        ${swatchesHtml(s.background || ['#000000'], 3, 'screen-bg')}
+      </div>`
+    : s.mode === 'color'
     ? `<div class="control">
         <div class="control-label"><span>Colors</span><small>up to 3, blended</small></div>
         ${swatchesHtml(s.colors || [], 3, 'screen')}
@@ -290,16 +319,18 @@ function screenHtml(c) {
           <button type="button" class="btn" data-screen-pick>${s.image ? 'Choose another picture…' : 'Choose a picture…'}</button>
         </div>`
       : '';
-  const note = s.mode === 'image' || s.mode === 'color'
+  const note = s.mode === 'temperature'
+    ? 'Lumora draws this in your colors and redraws it when the number changes (at most every 10 seconds). When Lumora closes, the screen goes back to the built-in display.'
+    : s.mode === 'image' || s.mode === 'color'
     ? 'It stays on the screen even with Lumora closed. Still pictures for now; animated GIFs are coming.'
-    : s.mode === 'liquid' ? 'The cooler draws this itself, live.' : 'Lumora leaves the screen showing whatever is on it.';
+    : s.mode === 'liquid' ? 'The cooler draws this itself, live, even with Lumora closed. Its colors can\'t be changed; use Temperature for your own.' : 'Lumora leaves the screen showing whatever is on it.';
   return `<section class="cool-card">
     <header><h3>Screen</h3></header>
     <input type="file" id="screenFile" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" hidden>
     <div class="screen-row">
       ${screenPreview(c)}
       <div class="screen-controls">
-        <div class="segmented grid2" role="radiogroup" aria-label="Screen shows">${modes}</div>
+        <div class="chips" role="radiogroup" aria-label="Screen shows">${modes}</div>
         ${extra}
       </div>
     </div>
@@ -490,6 +521,24 @@ function onClick(ev) {
     return render();
   }
   if (ev.target.closest('[data-screen-pick]')) return $('#screenFile').click();
+  const src = ev.target.closest('[data-screen-source]');
+  if (src) {
+    update(c, (x) => (x.screen.settings.source = src.dataset.screenSource), { now: true });
+    return render();
+  }
+  if (ev.target.closest('[data-screen-bg-add]')) {
+    update(c, (x) => {
+      const bg = x.screen.settings.background || (x.screen.settings.background = ['#000000']);
+      bg.push(['#1a1040', '#0b2a3a', '#2a0a1a'].find((p) => !bg.includes(p)) || '#202020');
+    }, { now: true });
+    return render();
+  }
+  const brm = ev.target.closest('[data-screen-bg-remove]');
+  if (brm) {
+    ev.preventDefault();
+    update(c, (x) => x.screen.settings.background.splice(+brm.dataset.screenBgRemove, 1), { now: true });
+    return render();
+  }
   if (ev.target.closest('[data-screen-add]')) {
     update(c, (x) => x.screen.settings.colors.push(PALETTE.find((p) => !x.screen.settings.colors.includes(p)) || '#ffffff'), { now: true });
     return render();
@@ -562,6 +611,14 @@ function onInput(ev) {
     t.style.setProperty('--p', `${t.value}%`);
     t.closest('.control').querySelector('output').textContent = `${t.value}%`;
     update(c, () => (ch.setting = { mode: 'fixed', duty: +t.value }));
+  } else if (t.dataset.screenText != null || t.dataset.screenBgColor != null) {
+    t.closest('.light-swatch').style.setProperty('--c', t.value);
+    update(c, (x) => {
+      if (t.dataset.screenText != null) x.screen.settings.text_color = t.value;
+      else x.screen.settings.background[+t.dataset.screenBgColor] = t.value;
+    }, { wait: 900 });
+    const pv = document.querySelector('.screen-preview');
+    if (pv) pv.outerHTML = screenPreview(c);
   } else if (t.dataset.screenColor != null) {
     t.closest('.light-swatch').style.setProperty('--c', t.value);
     update(c, (x) => (x.screen.settings.colors[+t.dataset.screenColor] = t.value), { wait: 900 });
