@@ -35,6 +35,17 @@ struct App {
 }
 
 impl App {
+    /// Changes the settings and saves them, holding the lock throughout so two
+    /// changes at once can't lose either. Returns the new settings.
+    fn edit_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
+        let mut guard = self.settings.lock().unwrap();
+        let mut next = guard.clone();
+        change(&mut next);
+        self.store.save_settings(&next).map_err(|e| format!("Couldn't save settings: {e}"))?;
+        *guard = next.clone();
+        Ok(next)
+    }
+
     fn touched(&self) {
         self.dirty.store(true, Ordering::SeqCst);
     }
@@ -87,10 +98,9 @@ fn get_state(app: State<App>, host: State<Arc<EngineHost>>, cooling: State<Cooli
 /// Saves and applies one cooler's settings (takeover, curves, screen).
 #[tauri::command]
 fn set_cooler_config(app: State<App>, cooling: State<CoolingManager>, id: String, config: CoolerConfig) -> CmdResult<Vec<CoolerView>> {
-    let mut settings = app.settings.lock().unwrap().clone();
-    settings.coolers.insert(id.clone(), config.clone());
-    app.store.save_settings(&settings).map_err(|e| e.to_string())?;
-    *app.settings.lock().unwrap() = settings;
+    app.edit_settings(|s| {
+        s.coolers.insert(id.clone(), config.clone());
+    })?;
     cooling.set_config(&id, config);
     Ok(cooling.views())
 }
@@ -259,14 +269,16 @@ fn delete_profile(app: State<App>, name: String) -> CmdResult<Vec<Profile>> {
 
 #[tauri::command]
 fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Settings) -> CmdResult<Settings> {
-    let settings = settings.sanitized();
-    app.store.save_settings(&settings).map_err(|e| e.to_string())?;
-    let before = app.settings.lock().unwrap().clone();
+    let mut before = None;
+    let settings = app.edit_settings(|s| {
+        before = Some(s.clone());
+        *s = settings.merged_into(s).sanitized();
+    })?;
+    let before = before.expect("set above");
     if before.builtin_engine != settings.builtin_engine || before.host != settings.host {
         host.apply(settings.builtin_engine, &settings.host);
     }
     app.engine.apply_settings(settings.clone());
-    *app.settings.lock().unwrap() = settings.clone();
     Ok(settings)
 }
 
@@ -401,11 +413,10 @@ async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>
 /// Lets Lumora drive a device's lights, or leaves it to the vendor's own app.
 #[tauri::command]
 fn set_device_control(app: State<App>, device: String, on: bool) -> CmdResult<Settings> {
-    let mut settings = app.settings.lock().unwrap().clone();
-    settings.device_control.insert(device, on);
-    app.store.save_settings(&settings).map_err(|e| e.to_string())?;
+    let settings = app.edit_settings(|s| {
+        s.device_control.insert(device, on);
+    })?;
     app.engine.apply_settings(settings.clone());
-    *app.settings.lock().unwrap() = settings.clone();
     Ok(settings)
 }
 
@@ -415,8 +426,14 @@ fn rescan(app: State<App>) {
 }
 
 #[tauri::command]
-fn resize_zone(app: State<App>, device: String, zone: usize, size: usize) {
+fn resize_zone(app: State<App>, device: String, zone: usize, size: usize) -> CmdResult<()> {
     app.engine.resize_zone(&device, zone, size);
+    // Remembered, so the size comes back after restarts and updates.
+    let settings = app.edit_settings(|s| {
+        s.zone_sizes.entry(device).or_default().insert(zone, size);
+    })?;
+    app.engine.apply_settings(settings);
+    Ok(())
 }
 
 #[tauri::command]
@@ -599,6 +616,13 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|h, _, _| show_main(h)))
         .plugin(tauri_plugin_opener::init())
+        // Window size and position come back on the next launch. Whether it
+        // starts visible is Lumora's own choice (tray, start minimized).
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Updates::default())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
@@ -741,6 +765,8 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
+            use tauri_plugin_window_state::AppHandleExt;
+            let _ = handle.save_window_state(tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE);
             if let Some(app) = handle.try_state::<App>() {
                 app.save_session();
             }

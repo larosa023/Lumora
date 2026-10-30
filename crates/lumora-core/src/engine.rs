@@ -93,6 +93,9 @@ struct State {
     reconnect: bool,
     rescan: bool,
     resizes: Vec<(String, usize, usize)>,
+    /// Zones already resized back to the saved size this session (tried once,
+    /// so a device that refuses can't cause a loop).
+    restored_sizes: std::collections::HashSet<(String, usize)>,
     /// 0 = dark, 1 = full; eases toward `enabled` for soft on/off.
     fade: f32,
     /// The main effect rendered for one light in the middle, published for
@@ -161,6 +164,7 @@ impl Engine {
             reconnect: false,
             rescan: false,
             resizes: Vec::new(),
+            restored_sizes: std::collections::HashSet::new(),
             ambient: None,
         };
         state.refresh_demo();
@@ -362,7 +366,22 @@ fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controll
         .collect();
     let count = runtimes.len();
     {
-        let mut s = shared.lock();
+        let mut guard = shared.lock();
+        let s = &mut *guard;
+        // Zones whose LED count isn't what the user set get resized back.
+        let mut fixes = Vec::new();
+        for d in &runtimes {
+            if let Some(sizes) = s.settings.zone_sizes.get(&d.info.id) {
+                for (&zone, &want) in sizes {
+                    let Some(z) = d.info.zones.get(zone) else { continue };
+                    let fits = z.resizable.is_some_and(|(lo, hi)| (lo..=hi).contains(&want));
+                    if fits && z.count != want && s.restored_sizes.insert((d.info.id.clone(), zone)) {
+                        fixes.push((d.info.id.clone(), zone, want));
+                    }
+                }
+            }
+        }
+        s.resizes.extend(fixes);
         s.real = runtimes;
         s.refresh_demo();
     }

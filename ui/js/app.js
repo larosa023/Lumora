@@ -195,8 +195,21 @@ document.addEventListener('click', (e) => {
   select(item.dataset.device);
 });
 
+/** Opens the page that was open last time, once its device has shown up
+ *  (devices and coolers appear a few seconds after launch). */
+function restoreSelection() {
+  const id = state.restore;
+  if (!id || state.selected) return false;
+  const known = cooling.coolerId(id) ? (state.app.coolers || []).some((c) => 'cooler:' + c.id === id) : devices().some((d) => d.id === id);
+  if (!known) return false;
+  state.restore = '';
+  select(id);
+  return true;
+}
+
 function select(id) {
   state.selected = id;
+  try { localStorage.setItem('lumora.selected', id); } catch { /* not remembered */ }
   document.body.classList.toggle('cooler-view', !!cooling.coolerId(id));
   document.body.classList.toggle('device-hands-off', !!selectedDevice() && !selectedDevice().managed);
   closePicker();
@@ -1119,6 +1132,7 @@ function onSnapshot(next) {
   // Coolers aren't lighting devices, so they're never in this list.
   if (state.selected && !cooling.coolerId(state.selected) && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
   if (devicesChanged) {
+    restoreSelection();
     renderAll();
   } else {
     renderConnection();
@@ -1175,6 +1189,8 @@ async function init() {
     },
   });
   applyTheme();
+  try { state.restore = localStorage.getItem('lumora.selected') || ''; } catch { state.restore = ''; }
+  restoreSelection();
   renderAll();
   renderProfileName();
   requestAnimationFrame(animateTiles);
@@ -1199,6 +1215,7 @@ async function init() {
     } else {
       state.app.coolers = e.payload;
     }
+    if (restoreSelection()) return;
     if (shape(prev) !== shape(state.app.coolers) || prev.length !== e.payload.length) {
       renderSidebar();
       if (cooling.selectedCooler() || cooling.coolerId(state.selected)) renderStage();

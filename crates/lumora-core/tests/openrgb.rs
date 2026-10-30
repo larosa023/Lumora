@@ -152,3 +152,29 @@ fn engine_falls_back_to_demo_devices() {
     engine.set_preview(true);
     wait_for("preview frames", || frames.load(Ordering::SeqCst) > 10);
 }
+
+#[test]
+fn saved_zone_sizes_come_back_after_a_restart() {
+    // First run: find the ARGB header zone (resizable, empty).
+    let first = MockServer::start(0, sample_rig(), 4).unwrap();
+    let engine = Engine::new(Settings { port: first.port, ..Default::default() }, Session::default(), Arc::new(|_| {}));
+    wait_for("connection", || engine.snapshot().connection.status == ConnectionStatus::Connected);
+    let snap = engine.snapshot();
+    let (dev, zone) = snap
+        .devices
+        .iter()
+        .find_map(|d| d.zones.iter().position(|z| z.resizable.is_some()).map(|z| (d.id.clone(), z)))
+        .expect("a resizable zone");
+    drop(engine);
+
+    // Next launch (a fresh engine forgot the size): the saved size is applied once.
+    let second = MockServer::start(0, sample_rig(), 4).unwrap();
+    let mut settings = Settings { port: second.port, ..Default::default() };
+    settings.zone_sizes.entry(dev.clone()).or_default().insert(zone, 24);
+    let engine = Engine::new(settings, Session::default(), Arc::new(|_| {}));
+    wait_for("zone restored", || {
+        engine.snapshot().devices.iter().find(|d| d.id == dev).is_some_and(|d| d.zones[zone].count == 24)
+    });
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(second.received.lock().unwrap().resizes, 1, "resized once, not in a loop");
+}
