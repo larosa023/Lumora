@@ -39,7 +39,10 @@ fn unhex(s: &str) -> io::Result<Vec<u8>> {
     if s.len() % 2 != 0 {
         return Err(bad());
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2).ok_or_else(bad)?, 16).map_err(|_| bad())).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2).ok_or_else(bad)?, 16).map_err(|_| bad()))
+        .collect()
 }
 
 /// Lumora's settings folder as seen from the same user's admin helper.
@@ -55,7 +58,12 @@ pub fn new_key(file: &Path) -> io::Result<String> {
     for i in 0..4u64 {
         let mut h = RandomState::new().build_hasher();
         h.write_u64(i);
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        h.write_u128(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
         h.write_u32(std::process::id());
         key.push_str(&format!("{:016x}", h.finish()));
     }
@@ -72,12 +80,15 @@ pub fn new_key(file: &Path) -> io::Result<String> {
 /// connections (each keeps its own open cooler), so a quick "list" never
 /// waits behind a cooler that's open.
 pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Path) {
-    let Ok(read_half) = stream.try_clone() else { return };
+    let Ok(read_half) = stream.try_clone() else {
+        return;
+    };
     let mut out = stream;
     let mut lines = BufReader::new(read_half).lines();
     let mut authed = false;
     let mut link: Option<Box<dyn Link>> = None;
-    let reply = |out: &mut TcpStream, text: String| out.write_all(format!("{text}\n").as_bytes()).is_ok();
+    let reply =
+        |out: &mut TcpStream, text: String| out.write_all(format!("{text}\n").as_bytes()).is_ok();
     let lock = || backend.lock().unwrap_or_else(|e| e.into_inner());
 
     while let Some(Ok(line)) = lines.next() {
@@ -96,7 +107,12 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
                 // Lumora checks this to know when the helper needs updating.
                 "version" => format!("ok {}", env!("CARGO_PKG_VERSION")),
                 "list" => {
-                    let ids: Vec<String> = lock().discover().into_iter().filter(|f| !f.needs_setup && !f.needs_restart).map(|f| f.id).collect();
+                    let ids: Vec<String> = lock()
+                        .discover()
+                        .into_iter()
+                        .filter(|f| !f.needs_setup && !f.needs_restart)
+                        .map(|f| f.id)
+                        .collect();
                     format!("ok {}", ids.join(" ")).trim_end().to_string()
                 }
                 // Details for the troubleshooting report, on one line.
@@ -145,7 +161,9 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
 
 /// Runs the relay on `127.0.0.1:6745`.
 pub fn run(backend: Box<dyn Backend>, key_file: PathBuf) {
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) else { return };
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) else {
+        return;
+    };
     let shared = Arc::new(Mutex::new(backend));
     for stream in listener.incoming().flatten() {
         let (backend, key_file) = (shared.clone(), key_file.clone());
@@ -176,17 +194,29 @@ impl Client {
     /// Sends one line and returns what follows "ok".
     fn ask(&mut self, line: &str) -> io::Result<String> {
         self.out.write_all(format!("{line}\n").as_bytes())?;
-        let reply = self.lines.next().ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "the helper closed the connection"))??;
+        let reply = self.lines.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the helper closed the connection",
+            )
+        })??;
         match reply.split_once(' ').unwrap_or((reply.as_str(), "")) {
             ("ok", rest) => Ok(rest.to_string()),
             ("err", why) => Err(io::Error::other(why.to_string())),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected reply from the helper")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected reply from the helper",
+            )),
         }
     }
 
     /// Coolers the helper can reach.
     pub fn list(&mut self) -> io::Result<Vec<String>> {
-        Ok(self.ask("list")?.split_whitespace().map(String::from).collect())
+        Ok(self
+            .ask("list")?
+            .split_whitespace()
+            .map(String::from)
+            .collect())
     }
 
     /// Opens a cooler; this connection then carries its messages.
@@ -202,7 +232,9 @@ impl Link for Client {
     }
 
     fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
-        let _ = self.out.set_read_timeout(Some(timeout + Duration::from_secs(5)));
+        let _ = self
+            .out
+            .set_read_timeout(Some(timeout + Duration::from_secs(5)));
         let rest = self.ask(&format!("read {}", timeout.as_millis()))?;
         if rest.is_empty() {
             Ok(None)
@@ -230,14 +262,28 @@ pub fn reachable(port: u16, key: &str) -> io::Result<Vec<String>> {
     let mut c = Client::connect(port, key)?;
     match c.ask("version") {
         Ok(v) if v == env!("CARGO_PKG_VERSION") => c.list(),
-        Ok(v) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("the helper is version {v}"))),
-        Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "the helper is from an older Lumora")),
+        Ok(v) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the helper is version {v}"),
+        )),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the helper is from an older Lumora",
+        )),
     }
 }
 
 /// Turns relay ids into coolers (for tests and simple backends).
 pub fn found(id: &str, vid: u16, pid: u16) -> FoundCooler {
-    FoundCooler { id: id.into(), vid, pid, serial: String::new(), needs_setup: false, needs_restart: false, problem: None }
+    FoundCooler {
+        id: id.into(),
+        vid,
+        pid,
+        serial: String::new(),
+        needs_setup: false,
+        needs_restart: false,
+        problem: None,
+    }
 }
 
 #[cfg(test)]
@@ -263,13 +309,18 @@ mod tests {
             }
         });
 
-        assert!(Client::connect(port, "wrong").is_err(), "a wrong key is refused");
+        assert!(
+            Client::connect(port, "wrong").is_err(),
+            "a wrong key is refused"
+        );
         let ids = reachable(port, &key).unwrap();
         assert_eq!(ids, vec!["usb:1b1c:0c13:1-4".to_string()]);
 
         // The real driver runs over the relay.
         let link = Client::connect(port, &key).unwrap().open(&ids[0]).unwrap();
-        let Some(Model::Hydro(m)) = Model::find(0x1B1C, 0x0C13) else { panic!() };
+        let Some(Model::Hydro(m)) = Model::find(0x1B1C, 0x0C13) else {
+            panic!()
+        };
         let mut d = super::super::hydro::HydroPro::new(link, m);
         use super::super::family::Driver;
         d.initialize().unwrap();

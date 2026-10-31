@@ -19,5 +19,9 @@ pub fn set(color: Rgb) {
 
 /// The current color, or `None` when the engine isn't running.
 pub fn get() -> Option<Rgb> {
-    slot().lock().unwrap_or_else(|e| e.into_inner()).filter(|(_, at)| at.elapsed() < STALE_AFTER).map(|(c, _)| c)
+    slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .filter(|(_, at)| at.elapsed() < STALE_AFTER)
+        .map(|(c, _)| c)
 }

@@ -60,15 +60,35 @@ impl Model {
     pub fn channels(&self) -> Vec<ChannelSpec> {
         match self {
             Model::Kraken(m) => {
-                let mut v = vec![ChannelSpec { id: "pump", name: "Pump", min_duty: PUMP_MIN_DUTY, kind: ChannelKind::Curve }];
+                let mut v = vec![ChannelSpec {
+                    id: "pump",
+                    name: "Pump",
+                    min_duty: PUMP_MIN_DUTY,
+                    kind: ChannelKind::Curve,
+                }];
                 if m.fan_id.is_some() {
-                    v.push(ChannelSpec { id: "fan", name: "Radiator fans", min_duty: 0, kind: ChannelKind::Curve });
+                    v.push(ChannelSpec {
+                        id: "fan",
+                        name: "Radiator fans",
+                        min_duty: 0,
+                        kind: ChannelKind::Curve,
+                    });
                 }
                 v
             }
             Model::Hydro(_) => vec![
-                ChannelSpec { id: "pump", name: "Pump", min_duty: 0, kind: ChannelKind::Modes },
-                ChannelSpec { id: "fan", name: "Radiator fans", min_duty: 0, kind: ChannelKind::Curve },
+                ChannelSpec {
+                    id: "pump",
+                    name: "Pump",
+                    min_duty: 0,
+                    kind: ChannelKind::Modes,
+                },
+                ChannelSpec {
+                    id: "fan",
+                    name: "Radiator fans",
+                    min_duty: 0,
+                    kind: ChannelKind::Curve,
+                },
             ],
         }
     }

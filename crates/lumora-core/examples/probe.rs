@@ -20,12 +20,22 @@ fn read_reply(s: &mut TcpStream) -> std::io::Result<(u32, u32, Vec<u8>)> {
     let le = |i: usize| u32::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3]]);
     let mut data = vec![0; le(12) as usize];
     s.read_exact(&mut data)?;
-    println!("  <- magic={:?} device={} id={} size={}", String::from_utf8_lossy(&h[..4]), le(4), le(8), data.len());
+    println!(
+        "  <- magic={:?} device={} id={} size={}",
+        String::from_utf8_lossy(&h[..4]),
+        le(4),
+        le(8),
+        data.len()
+    );
     Ok((le(4), le(8), data))
 }
 
 fn hex(d: &[u8]) -> String {
-    d.iter().take(96).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    d.iter()
+        .take(96)
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn main() {
@@ -62,7 +72,9 @@ fn main() {
     let count = match read_reply(&mut s) {
         Ok((_, _, d)) => {
             println!("raw: count reply {}", hex(&d));
-            d.get(..4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0)
+            d.get(..4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                .unwrap_or(0)
         }
         Err(e) => {
             println!("raw: no count reply: {e}");
@@ -75,7 +87,12 @@ fn main() {
             Ok((_, _, d)) => {
                 println!("raw: controller {i} first bytes {}", hex(&d));
                 match lumora_core::openrgb::parse_controller(&d, 4) {
-                    Ok(c) => println!("raw: parsed {} {} ({} LEDs)", c.vendor, c.name, c.led_count()),
+                    Ok(c) => println!(
+                        "raw: parsed {} {} ({} LEDs)",
+                        c.vendor,
+                        c.name,
+                        c.led_count()
+                    ),
                     Err(e) => println!("raw: PARSE ERROR {e}"),
                 }
             }
@@ -85,19 +102,26 @@ fn main() {
     drop(s);
 
     println!("client: connecting");
-    let mut client = match lumora_core::openrgb::Client::connect(&host, port, Duration::from_secs(2)) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("FAIL client connect: {e}");
-            std::process::exit(1);
-        }
-    };
+    let mut client =
+        match lumora_core::openrgb::Client::connect(&host, port, Duration::from_secs(2)) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("FAIL client connect: {e}");
+                std::process::exit(1);
+            }
+        };
     println!("client: protocol {}", client.protocol);
     match client.controllers() {
         Ok(list) => {
             println!("OK {} controllers", list.len());
             for c in list {
-                println!("  {} {} ({} LEDs, direct: {})", c.vendor, c.name, c.led_count(), c.supports_direct());
+                println!(
+                    "  {} {} ({} LEDs, direct: {})",
+                    c.vendor,
+                    c.name,
+                    c.led_count(),
+                    c.supports_direct()
+                );
             }
         }
         Err(e) => {

@@ -118,30 +118,42 @@ pub struct LedPos {
 impl DeviceInfo {
     pub fn from_controller(c: &Controller, id: String) -> Self {
         let mut start = 0;
-        let zones = c
-            .zones
-            .iter()
-            .map(|z| {
-                let count = z.leds_count as usize;
-                let kind = match z.kind {
-                    openrgb::ZONE_SINGLE => ZoneKind::Single,
-                    openrgb::ZONE_MATRIX if z.matrix.is_some() => ZoneKind::Matrix,
-                    _ => ZoneKind::Linear,
-                };
-                let matrix = z.matrix.as_ref().filter(|_| kind == ZoneKind::Matrix).map(|(h, w, map)| Matrix {
-                    width: *w as usize,
-                    height: *h as usize,
-                    map: map
-                        .iter()
-                        .map(|&v| (v != NO_LED && (v as usize) < count).then_some(v as usize))
-                        .collect(),
-                });
-                let resizable = (z.leds_max > z.leds_min && kind != ZoneKind::Matrix).then_some((z.leds_min as usize, z.leds_max as usize));
-                let zi = ZoneInfo { name: z.name.clone(), kind, start, count, resizable, matrix };
-                start += count;
-                zi
-            })
-            .collect();
+        let zones =
+            c.zones
+                .iter()
+                .map(|z| {
+                    let count = z.leds_count as usize;
+                    let kind = match z.kind {
+                        openrgb::ZONE_SINGLE => ZoneKind::Single,
+                        openrgb::ZONE_MATRIX if z.matrix.is_some() => ZoneKind::Matrix,
+                        _ => ZoneKind::Linear,
+                    };
+                    let matrix = z.matrix.as_ref().filter(|_| kind == ZoneKind::Matrix).map(
+                        |(h, w, map)| Matrix {
+                            width: *w as usize,
+                            height: *h as usize,
+                            map: map
+                                .iter()
+                                .map(|&v| {
+                                    (v != NO_LED && (v as usize) < count).then_some(v as usize)
+                                })
+                                .collect(),
+                        },
+                    );
+                    let resizable = (z.leds_max > z.leds_min && kind != ZoneKind::Matrix)
+                        .then_some((z.leds_min as usize, z.leds_max as usize));
+                    let zi = ZoneInfo {
+                        name: z.name.clone(),
+                        kind,
+                        start,
+                        count,
+                        resizable,
+                        matrix,
+                    };
+                    start += count;
+                    zi
+                })
+                .collect();
         let mut name = c.name.clone();
         if !c.vendor.is_empty() && name.to_lowercase().starts_with(&c.vendor.to_lowercase()) {
             name = name[c.vendor.len()..].trim().to_string();
@@ -158,7 +170,8 @@ impl DeviceInfo {
             led_count: start,
             zones,
             // A device whose headers are all still empty is controllable once sized.
-            controllable: c.supports_direct() && (start > 0 || c.zones.iter().any(|z| z.leds_max > z.leds_min)),
+            controllable: c.supports_direct()
+                && (start > 0 || c.zones.iter().any(|z| z.leds_max > z.leds_min)),
             virtual_device: false,
             managed: true,
         }
@@ -167,25 +180,53 @@ impl DeviceInfo {
     /// Normalized positions for every LED.
     pub fn led_positions(&self) -> Vec<LedPos> {
         let mut out = vec![LedPos { x: 0.5, y: 0.5 }; self.led_count];
-        let linear_zones = self.zones.iter().filter(|z| z.kind != ZoneKind::Matrix).count().max(1);
+        let linear_zones = self
+            .zones
+            .iter()
+            .filter(|z| z.kind != ZoneKind::Matrix)
+            .count()
+            .max(1);
         let mut row = 0;
         for z in &self.zones {
             match (&z.matrix, z.kind) {
                 (Some(m), ZoneKind::Matrix) => {
-                    let fx = |c: usize| if m.width > 1 { c as f32 / (m.width - 1) as f32 } else { 0.5 };
-                    let fy = |r: usize| if m.height > 1 { r as f32 / (m.height - 1) as f32 } else { 0.5 };
+                    let fx = |c: usize| {
+                        if m.width > 1 {
+                            c as f32 / (m.width - 1) as f32
+                        } else {
+                            0.5
+                        }
+                    };
+                    let fy = |r: usize| {
+                        if m.height > 1 {
+                            r as f32 / (m.height - 1) as f32
+                        } else {
+                            0.5
+                        }
+                    };
                     for (cell, led) in m.map.iter().enumerate() {
                         if let Some(i) = led {
                             if let Some(p) = out.get_mut(z.start + i) {
-                                *p = LedPos { x: fx(cell % m.width), y: fy(cell / m.width) };
+                                *p = LedPos {
+                                    x: fx(cell % m.width),
+                                    y: fy(cell / m.width),
+                                };
                             }
                         }
                     }
                 }
                 _ => {
-                    let y = if linear_zones > 1 { row as f32 / (linear_zones - 1) as f32 } else { 0.5 };
+                    let y = if linear_zones > 1 {
+                        row as f32 / (linear_zones - 1) as f32
+                    } else {
+                        0.5
+                    };
                     for i in 0..z.count {
-                        let x = if z.count > 1 { i as f32 / (z.count - 1) as f32 } else { 0.5 };
+                        let x = if z.count > 1 {
+                            i as f32 / (z.count - 1) as f32
+                        } else {
+                            0.5
+                        };
                         out[z.start + i] = LedPos { x, y };
                     }
                     row += 1;

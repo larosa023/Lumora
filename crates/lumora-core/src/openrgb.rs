@@ -205,7 +205,13 @@ impl Client {
         r
     }
 
-    fn request(&mut self, device: u32, id: u32, data: &[u8], timeout: Duration) -> io::Result<Vec<u8>> {
+    fn request(
+        &mut self,
+        device: u32,
+        id: u32,
+        data: &[u8],
+        timeout: Duration,
+    ) -> io::Result<Vec<u8>> {
         // Drop anything stale left from an earlier timed-out request.
         while self.rx.try_recv().is_ok() {}
         self.send(device, id, data)?;
@@ -216,24 +222,44 @@ impl Client {
                 Ok(p) if p.id == id && p.device == device => return Ok(p.data),
                 Ok(_) => continue,
                 Err(RecvTimeoutError::Timeout) => {
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "OpenRGB did not reply"))
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "OpenRGB did not reply",
+                    ))
                 }
                 Err(RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(io::ErrorKind::ConnectionAborted, "OpenRGB closed the connection"))
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "OpenRGB closed the connection",
+                    ))
                 }
             }
         }
     }
 
     pub fn controller_count(&mut self) -> io::Result<u32> {
-        let d = self.request(0, packet::REQUEST_CONTROLLER_COUNT, &[], Duration::from_secs(3))?;
+        let d = self.request(
+            0,
+            packet::REQUEST_CONTROLLER_COUNT,
+            &[],
+            Duration::from_secs(3),
+        )?;
         Reader::new(&d).u32()
     }
 
     pub fn controller(&mut self, index: u32) -> io::Result<Controller> {
-        let payload = if self.protocol >= 1 { self.protocol.to_le_bytes().to_vec() } else { vec![] };
+        let payload = if self.protocol >= 1 {
+            self.protocol.to_le_bytes().to_vec()
+        } else {
+            vec![]
+        };
         // Slow buses (SMBus RAM) can take a moment to report.
-        let d = self.request(index, packet::REQUEST_CONTROLLER_DATA, &payload, Duration::from_secs(10))?;
+        let d = self.request(
+            index,
+            packet::REQUEST_CONTROLLER_DATA,
+            &payload,
+            Duration::from_secs(10),
+        )?;
         parse_controller(&d, self.protocol)
     }
 
@@ -287,12 +313,18 @@ fn read_packet(r: &mut impl Read) -> io::Result<Packet> {
     let mut h = [0u8; 16];
     r.read_exact(&mut h)?;
     if &h[0..4] != MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad packet magic"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad packet magic",
+        ));
     }
     let le = |i: usize| u32::from_le_bytes([h[i], h[i + 1], h[i + 2], h[i + 3]]);
     let (device, id, size) = (le(4), le(8), le(12) as usize);
     if size > 64 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "packet too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "packet too large",
+        ));
     }
     let mut data = vec![0; size];
     r.read_exact(&mut data)?;
@@ -312,7 +344,10 @@ impl<'a> Reader<'a> {
 
     fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
         if self.pos + n > self.buf.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "truncated controller data"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated controller data",
+            ));
         }
         let s = &self.buf[self.pos..self.pos + n];
         self.pos += n;
@@ -347,7 +382,11 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
     let _size = r.u32()?;
     let kind = r.i32()?;
     let name = r.string()?;
-    let vendor = if protocol >= 1 { r.string()? } else { String::new() };
+    let vendor = if protocol >= 1 {
+        r.string()?
+    } else {
+        String::new()
+    };
     let description = r.string()?;
     let version = r.string()?;
     let serial = r.string()?;
@@ -410,10 +449,23 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
                 let kind = r.i32()?;
                 let start = r.u32()?;
                 let leds_count = r.u32()?;
-                segments.push(Segment { name, kind, start, leds_count });
+                segments.push(Segment {
+                    name,
+                    kind,
+                    start,
+                    leds_count,
+                });
             }
         }
-        zones.push(Zone { name, kind, leds_min, leds_max, leds_count, matrix, segments });
+        zones.push(Zone {
+            name,
+            kind,
+            leds_min,
+            leds_max,
+            leds_count,
+            matrix,
+            segments,
+        });
     }
 
     let num_leds = r.u16()?;
@@ -433,7 +485,11 @@ pub fn parse_controller(data: &[u8], protocol: u32) -> io::Result<Controller> {
     if zone_leds as usize != leds.len() || leds.len() != colors.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("controller data doesn't add up ({zone_leds} zone LEDs, {} LEDs, {} colors)", leds.len(), colors.len()),
+            format!(
+                "controller data doesn't add up ({zone_leds} zone LEDs, {} LEDs, {} colors)",
+                leds.len(),
+                colors.len()
+            ),
         ));
     }
 

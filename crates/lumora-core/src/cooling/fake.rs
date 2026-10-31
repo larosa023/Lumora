@@ -112,7 +112,8 @@ impl FakeKrakenState {
             }
             (0x38, 0x01) => {
                 self.liquid_screen = r[2] == 0x02;
-                let ok = r[2] == 0x02 || self.buckets.get(r[3] as usize).is_some_and(|b| b.is_some());
+                let ok =
+                    r[2] == 0x02 || self.buckets.get(r[3] as usize).is_some_and(|b| b.is_some());
                 if ok {
                     self.shown_bucket = (r[2] == 0x04).then_some(r[3]);
                 }
@@ -188,7 +189,10 @@ pub struct FakeBulk(pub Arc<Mutex<FakeKrakenState>>);
 impl Bulk for FakeBulk {
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
         let mut s = self.0.lock().unwrap();
-        assert!(s.writing.is_some(), "bulk data only flows during a transfer");
+        assert!(
+            s.writing.is_some(),
+            "bulk data only flows during a transfer"
+        );
         s.bulk.extend_from_slice(data);
         s.bulk_writes += 1;
         Ok(())
@@ -199,7 +203,10 @@ impl Link for FakeKraken {
     fn write(&mut self, report: &[u8]) -> io::Result<()> {
         let mut s = self.0.lock().unwrap();
         if s.unplugged {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "device unplugged"));
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "device unplugged",
+            ));
         }
         assert_eq!(report.len(), 64, "reports are always 64 bytes");
         s.handle(report);
@@ -209,7 +216,10 @@ impl Link for FakeKraken {
     fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
         let mut s = self.0.lock().unwrap();
         if s.unplugged {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "device unplugged"));
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "device unplugged",
+            ));
         }
         if s.busy {
             s.queue.clear();
@@ -262,7 +272,10 @@ impl FakeHydroState {
         let mut reply = vec![m[0], 0x12, 0x34];
         match m[0] {
             0xAA => reply.extend([1, 1, 15, 4]),
-            0xA9 => reply.extend([self.liquid_c.trunc() as u8, ((self.liquid_c.fract() * 10.0).round() as u8).min(9)]),
+            0xA9 => reply.extend([
+                self.liquid_c.trunc() as u8,
+                ((self.liquid_c.fract() * 10.0).round() as u8).min(9),
+            ]),
             0x41 => {
                 let rpm: u16 = 900 + m[1] as u16 * 20;
                 reply.push(m[1]);
@@ -303,7 +316,10 @@ pub struct FakeBackend {
 impl FakeBackend {
     pub fn with_kraken(pid: u16) -> (FakeBackend, Arc<Mutex<FakeKrakenState>>) {
         let state = Arc::new(Mutex::new(FakeKrakenState::new(pid, "FAKE0001")));
-        let backend = FakeBackend { devices: Arc::new(Mutex::new(vec![state.clone()])), ..Default::default() };
+        let backend = FakeBackend {
+            devices: Arc::new(Mutex::new(vec![state.clone()])),
+            ..Default::default()
+        };
         (backend, state)
     }
 
@@ -345,7 +361,15 @@ impl Backend for FakeBackend {
             .collect();
         for h in self.hydros.lock().unwrap().iter() {
             let d = h.lock().unwrap();
-            out.push(FoundCooler { id: Self::hydro_id(&d), vid: CORSAIR_VID, pid: d.pid, serial: String::new(), needs_setup: d.needs_setup, needs_restart: d.needs_restart, problem: None });
+            out.push(FoundCooler {
+                id: Self::hydro_id(&d),
+                vid: CORSAIR_VID,
+                pid: d.pid,
+                serial: String::new(),
+                needs_setup: d.needs_setup,
+                needs_restart: d.needs_restart,
+                problem: None,
+            });
         }
         out
     }

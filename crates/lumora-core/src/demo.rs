@@ -8,15 +8,32 @@ fn linear(zones: &[(&str, usize)]) -> Vec<ZoneInfo> {
     zones
         .iter()
         .map(|&(name, count)| {
-            let kind = if count == 1 { ZoneKind::Single } else { ZoneKind::Linear };
-            let z = ZoneInfo { name: name.into(), kind, start, count, resizable: None, matrix: None };
+            let kind = if count == 1 {
+                ZoneKind::Single
+            } else {
+                ZoneKind::Linear
+            };
+            let z = ZoneInfo {
+                name: name.into(),
+                kind,
+                start,
+                count,
+                resizable: None,
+                matrix: None,
+            };
             start += count;
             z
         })
         .collect()
 }
 
-fn device(id: &str, name: &str, vendor: &str, kind: DeviceKind, zones: Vec<ZoneInfo>) -> DeviceInfo {
+fn device(
+    id: &str,
+    name: &str,
+    vendor: &str,
+    kind: DeviceKind,
+    zones: Vec<ZoneInfo>,
+) -> DeviceInfo {
     DeviceInfo {
         id: format!("demo:{id}"),
         name: name.into(),
@@ -60,17 +77,51 @@ fn keyboard_75() -> ZoneInfo {
         start: 0,
         count: n,
         resizable: None,
-        matrix: Some(Matrix { width: 16, height: 6, map }),
+        matrix: Some(Matrix {
+            width: 16,
+            height: 6,
+            map,
+        }),
     }
 }
 
 pub fn devices() -> Vec<DeviceInfo> {
     vec![
-        device("kbd", "Demo Keyboard 75%", "Lumora", DeviceKind::Keyboard, vec![keyboard_75()]),
-        device("mouse", "Demo Mouse", "Lumora", DeviceKind::Mouse, linear(&[("Logo", 1), ("Scroll Wheel", 1), ("Underglow", 10)])),
-        device("ram1", "Demo DDR5 Stick 1", "Lumora", DeviceKind::Ram, linear(&[("DRAM", 12)])),
-        device("ram2", "Demo DDR5 Stick 2", "Lumora", DeviceKind::Ram, linear(&[("DRAM", 12)])),
-        device("gpu", "Demo Graphics Card", "Lumora", DeviceKind::Gpu, linear(&[("Light Bar", 18)])),
+        device(
+            "kbd",
+            "Demo Keyboard 75%",
+            "Lumora",
+            DeviceKind::Keyboard,
+            vec![keyboard_75()],
+        ),
+        device(
+            "mouse",
+            "Demo Mouse",
+            "Lumora",
+            DeviceKind::Mouse,
+            linear(&[("Logo", 1), ("Scroll Wheel", 1), ("Underglow", 10)]),
+        ),
+        device(
+            "ram1",
+            "Demo DDR5 Stick 1",
+            "Lumora",
+            DeviceKind::Ram,
+            linear(&[("DRAM", 12)]),
+        ),
+        device(
+            "ram2",
+            "Demo DDR5 Stick 2",
+            "Lumora",
+            DeviceKind::Ram,
+            linear(&[("DRAM", 12)]),
+        ),
+        device(
+            "gpu",
+            "Demo Graphics Card",
+            "Lumora",
+            DeviceKind::Gpu,
+            linear(&[("Light Bar", 18)]),
+        ),
         device(
             "aio",
             "Demo AIO Cooler",
@@ -78,6 +129,12 @@ pub fn devices() -> Vec<DeviceInfo> {
             DeviceKind::Cooler,
             linear(&[("Pump", 16), ("Fan 1", 12), ("Fan 2", 12), ("Fan 3", 12)]),
         ),
-        device("strip", "Demo Case Strip", "Lumora", DeviceKind::LedStrip, linear(&[("Strip", 40)])),
+        device(
+            "strip",
+            "Demo Case Strip",
+            "Lumora",
+            DeviceKind::LedStrip,
+            linear(&[("Strip", 40)]),
+        ),
     ]
 }

@@ -77,13 +77,18 @@ impl Default for Settings {
 pub const LEAVE_ALONE_BY_DEFAULT: &[&str] = &["NZXT"];
 
 pub fn default_control(vendor: &str) -> bool {
-    !LEAVE_ALONE_BY_DEFAULT.iter().any(|v| v.eq_ignore_ascii_case(vendor.trim()))
+    !LEAVE_ALONE_BY_DEFAULT
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case(vendor.trim()))
 }
 
 impl Settings {
     /// Whether Lumora drives this device's lights.
     pub fn controls(&self, id: &str, vendor: &str) -> bool {
-        self.device_control.get(id).copied().unwrap_or_else(|| default_control(vendor))
+        self.device_control
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| default_control(vendor))
     }
 
     /// Takes this window's choices but keeps what the app itself manages
@@ -124,7 +129,12 @@ pub struct Profile {
 
 impl Default for Profile {
     fn default() -> Self {
-        Profile { name: String::new(), global: EffectConfig::default(), overrides: BTreeMap::new(), brightness: 100 }
+        Profile {
+            name: String::new(),
+            global: EffectConfig::default(),
+            overrides: BTreeMap::new(),
+            brightness: 100,
+        }
     }
 }
 
@@ -139,11 +149,22 @@ pub struct Session {
 
 impl Default for Session {
     fn default() -> Self {
-        Session { lighting: Profile::default(), enabled: true, active_profile: None }
+        Session {
+            lighting: Profile::default(),
+            enabled: true,
+            active_profile: None,
+        }
     }
 }
 
-fn preset(name: &str, effect: &str, colors: &[&str], speed: u8, size: u8, direction: Direction) -> Profile {
+fn preset(
+    name: &str,
+    effect: &str,
+    colors: &[&str],
+    speed: u8,
+    size: u8,
+    direction: Direction,
+) -> Profile {
     Profile {
         name: name.into(),
         global: EffectConfig {
@@ -162,9 +183,30 @@ fn preset(name: &str, effect: &str, colors: &[&str], speed: u8, size: u8, direct
 /// Profiles created on first launch.
 pub fn starter_profiles() -> Vec<Profile> {
     vec![
-        preset("Neon Drift", "color_wave", &["#7c5cff", "#00d4ff", "#ff3da8"], 40, 50, Direction::Right),
-        preset("Arctic", "aurora", &["#e8fbff", "#00d4ff", "#3d6bff"], 25, 60, Direction::Right),
-        preset("Ember", "fire", &["#ff1e00", "#ff8a00", "#ffe066"], 45, 55, Direction::Up),
+        preset(
+            "Neon Drift",
+            "color_wave",
+            &["#7c5cff", "#00d4ff", "#ff3da8"],
+            40,
+            50,
+            Direction::Right,
+        ),
+        preset(
+            "Arctic",
+            "aurora",
+            &["#e8fbff", "#00d4ff", "#3d6bff"],
+            25,
+            60,
+            Direction::Right,
+        ),
+        preset(
+            "Ember",
+            "fire",
+            &["#ff1e00", "#ff8a00", "#ffe066"],
+            45,
+            55,
+            Direction::Up,
+        ),
         preset("Focus", "static", &["#ffd7a8"], 0, 50, Direction::Right),
         preset("Rainbow", "rainbow_wave", &[], 45, 50, Direction::Right),
     ]
@@ -222,7 +264,9 @@ impl Store {
     }
 
     pub fn settings(&self) -> Settings {
-        self.load::<Settings>("settings.json").unwrap_or_default().sanitized()
+        self.load::<Settings>("settings.json")
+            .unwrap_or_default()
+            .sanitized()
     }
 
     pub fn save_settings(&self, s: &Settings) -> io::Result<()> {
@@ -230,7 +274,8 @@ impl Store {
     }
 
     pub fn profiles(&self) -> Vec<Profile> {
-        self.load::<Vec<Profile>>("profiles.json").unwrap_or_else(starter_profiles)
+        self.load::<Vec<Profile>>("profiles.json")
+            .unwrap_or_else(starter_profiles)
     }
 
     pub fn save_profiles(&self, p: &[Profile]) -> io::Result<()> {
@@ -257,13 +302,19 @@ fn read_json(path: &Path) -> Option<serde_json::Value> {
 fn salvage<T: DeserializeOwned + Serialize + Default>(value: serde_json::Value) -> T {
     use serde_json::Value;
     let default = serde_json::to_value(T::default()).unwrap_or(Value::Null);
-    let fixed = salvage_value(&default, value, &|v| serde_json::from_value::<T>(v.clone()).is_ok());
+    let fixed = salvage_value(&default, value, &|v| {
+        serde_json::from_value::<T>(v.clone()).is_ok()
+    });
     serde_json::from_value(fixed).unwrap_or_default()
 }
 
 /// Merges `value` into `base` one piece at a time, keeping only pieces that
 /// leave the whole thing readable (checked by `ok`).
-fn salvage_value(base: &serde_json::Value, value: serde_json::Value, ok: &dyn Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+fn salvage_value(
+    base: &serde_json::Value,
+    value: serde_json::Value,
+    ok: &dyn Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
     use serde_json::Value;
     match (base, value) {
         (Value::Object(b), Value::Object(v)) => {
@@ -279,7 +330,11 @@ fn salvage_value(base: &serde_json::Value, value: serde_json::Value, ok: &dyn Fn
                 let inner_base = out.get(&k).cloned().unwrap_or(Value::Null);
                 let candidate = match (&inner_base, &item) {
                     (Value::Object(_), Value::Object(_)) | (Value::Null, Value::Object(_)) => {
-                        let start = if inner_base.is_null() { Value::Object(Default::default()) } else { inner_base.clone() };
+                        let start = if inner_base.is_null() {
+                            Value::Object(Default::default())
+                        } else {
+                            inner_base.clone()
+                        };
                         Some(salvage_value(&start, item, &|piece| {
                             let mut t = Value::Object(out.clone());
                             t[k.as_str()] = piece.clone();
@@ -338,7 +393,11 @@ mod tests {
         assert_eq!(store.settings(), Settings::default());
         assert_eq!(store.profiles().len(), starter_profiles().len());
 
-        let s = Settings { theme: "oled".into(), fps: 500, ..Default::default() };
+        let s = Settings {
+            theme: "oled".into(),
+            fps: 500,
+            ..Default::default()
+        };
         store.save_settings(&s).unwrap();
         let loaded = store.settings();
         assert_eq!(loaded.theme, "oled");
@@ -355,14 +414,31 @@ mod tests {
     fn a_bad_value_keeps_everything_else() {
         let dir = std::env::temp_dir().join(format!("lumora-store-salvage-{}", std::process::id()));
         let store = Store::new(&dir);
-        let mut s = Settings { theme: "frost".into(), start_minimized: true, ..Default::default() };
+        let mut s = Settings {
+            theme: "frost".into(),
+            start_minimized: true,
+            ..Default::default()
+        };
         s.device_control.insert("dev1".into(), false);
-        s.coolers.insert("hid:a".into(), crate::cooling::CoolerConfig { takeover: true, ..Default::default() });
-        s.coolers.insert("hid:b".into(), crate::cooling::CoolerConfig { takeover: true, ..Default::default() });
+        s.coolers.insert(
+            "hid:a".into(),
+            crate::cooling::CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
+        s.coolers.insert(
+            "hid:b".into(),
+            crate::cooling::CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
         store.save_settings(&s).unwrap();
         // Say a newer version wrote a screen mode this one doesn't know.
         let path = dir.join("settings.json");
-        let mut v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         v["coolers"]["hid:b"]["screen"]["mode"] = "hologram".into();
         fs::write(&path, v.to_string()).unwrap();
 
@@ -370,8 +446,14 @@ mod tests {
         assert_eq!(loaded.theme, "frost");
         assert!(loaded.start_minimized);
         assert_eq!(loaded.device_control.get("dev1"), Some(&false));
-        assert!(loaded.coolers["hid:a"].takeover, "the readable cooler is kept");
-        assert!(loaded.coolers["hid:b"].takeover, "and the rest of the other one");
+        assert!(
+            loaded.coolers["hid:a"].takeover,
+            "the readable cooler is kept"
+        );
+        assert!(
+            loaded.coolers["hid:b"].takeover,
+            "and the rest of the other one"
+        );
         assert!(dir.join("settings.json.unreadable").is_file());
         let _ = fs::remove_dir_all(dir);
     }
@@ -379,11 +461,24 @@ mod tests {
     #[test]
     fn an_older_window_copy_cant_undo_cooler_or_device_choices() {
         let mut current = Settings::default();
-        current.coolers.insert("hid:kraken".into(), crate::cooling::CoolerConfig { takeover: true, ..Default::default() });
+        current.coolers.insert(
+            "hid:kraken".into(),
+            crate::cooling::CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
         current.device_control.insert("nzxt".into(), true);
-        current.zone_sizes.entry("board".into()).or_default().insert(1, 24);
+        current
+            .zone_sizes
+            .entry("board".into())
+            .or_default()
+            .insert(1, 24);
         // The window opened before those changes, then the user picked a theme.
-        let from_window = Settings { theme: "frost".into(), ..Default::default() };
+        let from_window = Settings {
+            theme: "frost".into(),
+            ..Default::default()
+        };
         let merged = from_window.merged_into(&current);
         assert_eq!(merged.theme, "frost");
         assert!(merged.coolers["hid:kraken"].takeover);
@@ -395,8 +490,18 @@ mod tests {
     fn a_broken_file_falls_back_to_the_backup() {
         let dir = std::env::temp_dir().join(format!("lumora-store-bak-{}", std::process::id()));
         let store = Store::new(&dir);
-        store.save_settings(&Settings { theme: "oled".into(), ..Default::default() }).unwrap();
-        store.save_settings(&Settings { theme: "midnight".into(), ..Default::default() }).unwrap();
+        store
+            .save_settings(&Settings {
+                theme: "oled".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .save_settings(&Settings {
+                theme: "midnight".into(),
+                ..Default::default()
+            })
+            .unwrap();
         fs::write(dir.join("settings.json"), "{ half written").unwrap();
         assert_eq!(store.settings().theme, "oled", "previous good copy");
         let _ = fs::remove_dir_all(dir);

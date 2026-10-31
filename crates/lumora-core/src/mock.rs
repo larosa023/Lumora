@@ -9,7 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::color::Rgb;
-use crate::openrgb::{packet, Controller, Mode, Segment, Zone, MAGIC, MODE_FLAG_HAS_PER_LED_COLOR, NO_LED, ZONE_LINEAR, ZONE_MATRIX, ZONE_SINGLE};
+use crate::openrgb::{
+    packet, Controller, Mode, Segment, Zone, MAGIC, MODE_FLAG_HAS_PER_LED_COLOR, NO_LED,
+    ZONE_LINEAR, ZONE_MATRIX, ZONE_SINGLE,
+};
 
 /// What the mock server has received, for assertions.
 #[derive(Default, Debug)]
@@ -53,7 +56,11 @@ impl MockServer {
                 }
             });
         }
-        Ok(MockServer { port, received, clients })
+        Ok(MockServer {
+            port,
+            received,
+            clients,
+        })
     }
 
     /// Tells every connected client that the device list changed.
@@ -86,7 +93,8 @@ fn serve(
                 write_packet(&mut s, 0, id, &server_protocol.to_le_bytes())?;
             }
             packet::SET_CLIENT_NAME => {
-                let name = String::from_utf8_lossy(data.strip_suffix(&[0]).unwrap_or(&data)).to_string();
+                let name =
+                    String::from_utf8_lossy(data.strip_suffix(&[0]).unwrap_or(&data)).to_string();
                 rec.lock().unwrap().client_name = Some(name);
             }
             packet::REQUEST_CONTROLLER_COUNT => {
@@ -94,8 +102,16 @@ fn serve(
                 write_packet(&mut s, 0, id, &n.to_le_bytes())?;
             }
             packet::REQUEST_CONTROLLER_DATA => {
-                let p = if data.len() >= 4 { u32::from_le_bytes(data[..4].try_into().unwrap()) } else { 0 };
-                let data = controllers.lock().unwrap().get(device as usize).map(|c| encode_controller(c, p.min(server_protocol)));
+                let p = if data.len() >= 4 {
+                    u32::from_le_bytes(data[..4].try_into().unwrap())
+                } else {
+                    0
+                };
+                let data = controllers
+                    .lock()
+                    .unwrap()
+                    .get(device as usize)
+                    .map(|c| encode_controller(c, p.min(server_protocol)));
                 if let Some(d) = data {
                     write_packet(&mut s, device, id, &d)?;
                 }
@@ -245,8 +261,16 @@ fn controller(kind: i32, name: &str, vendor: &str, location: &str, zones: Vec<Zo
         location: location.into(),
         active_mode: 0,
         modes: vec![
-            Mode { name: "Direct".into(), value: 0, flags: MODE_FLAG_HAS_PER_LED_COLOR },
-            Mode { name: "Rainbow Wave".into(), value: 1, flags: 1 },
+            Mode {
+                name: "Direct".into(),
+                value: 0,
+                flags: MODE_FLAG_HAS_PER_LED_COLOR,
+            },
+            Mode {
+                name: "Rainbow Wave".into(),
+                value: 1,
+                flags: 1,
+            },
         ],
         zones,
         leds: (0..n).map(|i| format!("LED {}", i + 1)).collect(),
@@ -255,12 +279,28 @@ fn controller(kind: i32, name: &str, vendor: &str, location: &str, zones: Vec<Zo
 }
 
 fn zone(name: &str, kind: i32, n: u32) -> Zone {
-    Zone { name: name.into(), kind, leds_min: n, leds_max: n, leds_count: n, matrix: None, segments: Vec::new() }
+    Zone {
+        name: name.into(),
+        kind,
+        leds_min: n,
+        leds_max: n,
+        leds_count: n,
+        matrix: None,
+        segments: Vec::new(),
+    }
 }
 
 /// An addressable header: empty until told how many LEDs are on it.
 fn header(name: &str) -> Zone {
-    Zone { name: name.into(), kind: ZONE_LINEAR, leds_min: 0, leds_max: 120, leds_count: 0, matrix: None, segments: Vec::new() }
+    Zone {
+        name: name.into(),
+        kind: ZONE_LINEAR,
+        leds_min: 0,
+        leds_max: 120,
+        leds_count: 0,
+        matrix: None,
+        segments: Vec::new(),
+    }
 }
 
 /// A believable desktop: two RAM sticks, a GPU, an AIO with fans, a keyboard and a mouse.
@@ -268,9 +308,27 @@ pub fn sample_rig() -> Vec<Controller> {
     let (h, w) = (2u32, 5u32);
     let map: Vec<u32> = vec![0, 1, 2, 3, 4, 5, 6, NO_LED, 7, 8];
     vec![
-        controller(1, "Vengeance RGB Pro", "Corsair", "I2C: SMBus 0x58", vec![zone("DRAM", ZONE_LINEAR, 10)]),
-        controller(1, "Vengeance RGB Pro", "Corsair", "I2C: SMBus 0x59", vec![zone("DRAM", ZONE_LINEAR, 10)]),
-        controller(2, "GeForce RTX 4070 Ti", "ASUS", "I2C: NVIDIA 0x67", vec![zone("Logo", ZONE_LINEAR, 14)]),
+        controller(
+            1,
+            "Vengeance RGB Pro",
+            "Corsair",
+            "I2C: SMBus 0x58",
+            vec![zone("DRAM", ZONE_LINEAR, 10)],
+        ),
+        controller(
+            1,
+            "Vengeance RGB Pro",
+            "Corsair",
+            "I2C: SMBus 0x59",
+            vec![zone("DRAM", ZONE_LINEAR, 10)],
+        ),
+        controller(
+            2,
+            "GeForce RTX 4070 Ti",
+            "ASUS",
+            "I2C: NVIDIA 0x67",
+            vec![zone("Logo", ZONE_LINEAR, 14)],
+        ),
         controller(
             3,
             "Kraken Elite",
@@ -278,7 +336,12 @@ pub fn sample_rig() -> Vec<Controller> {
             "HID: /dev/hidraw3",
             vec![
                 Zone {
-                    segments: vec![Segment { name: "Ring".into(), kind: ZONE_LINEAR, start: 0, leds_count: 24 }],
+                    segments: vec![Segment {
+                        name: "Ring".into(),
+                        kind: ZONE_LINEAR,
+                        start: 0,
+                        leds_count: 24,
+                    }],
                     ..zone("Pump Ring", ZONE_LINEAR, 24)
                 },
                 zone("Fan 1", ZONE_LINEAR, 8),
@@ -290,15 +353,36 @@ pub fn sample_rig() -> Vec<Controller> {
             "Mini Board",
             "Lumora Labs",
             "HID: /dev/hidraw5",
-            vec![Zone { name: "Keyboard".into(), kind: ZONE_MATRIX, leds_min: 9, leds_max: 9, leds_count: 9, matrix: Some((h, w, map)), segments: Vec::new() }],
+            vec![Zone {
+                name: "Keyboard".into(),
+                kind: ZONE_MATRIX,
+                leds_min: 9,
+                leds_max: 9,
+                leds_count: 9,
+                matrix: Some((h, w, map)),
+                segments: Vec::new(),
+            }],
         ),
-        controller(6, "Viper V3", "Razer", "HID: /dev/hidraw7", vec![zone("Logo", ZONE_SINGLE, 1), zone("Underglow", ZONE_LINEAR, 6)]),
+        controller(
+            6,
+            "Viper V3",
+            "Razer",
+            "HID: /dev/hidraw7",
+            vec![
+                zone("Logo", ZONE_SINGLE, 1),
+                zone("Underglow", ZONE_LINEAR, 6),
+            ],
+        ),
         controller(
             0,
             "ROG STRIX B650E-F GAMING",
             "ASUS",
             "HID: /dev/hidraw9",
-            vec![zone("Aura Mainboard", ZONE_LINEAR, 3), header("Aura Addressable 1"), header("Aura Addressable 2")],
+            vec![
+                zone("Aura Mainboard", ZONE_LINEAR, 3),
+                header("Aura Addressable 1"),
+                header("Aura Addressable 2"),
+            ],
         ),
     ]
 }

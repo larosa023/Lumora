@@ -78,7 +78,17 @@ impl Runtime {
     fn new(info: DeviceInfo, sink: Sink) -> Self {
         let leds = info.led_positions();
         let n = info.led_count;
-        Runtime { info, leds, sink, cfg: None, effect: None, raw: vec![Rgb::BLACK; n], sent: None, previewed: None, needs_custom_mode: true }
+        Runtime {
+            info,
+            leds,
+            sink,
+            cfg: None,
+            effect: None,
+            raw: vec![Rgb::BLACK; n],
+            sent: None,
+            previewed: None,
+            needs_custom_mode: true,
+        }
     }
 }
 
@@ -115,7 +125,10 @@ impl State {
             DemoMode::Auto => self.real.is_empty(),
         };
         if want && self.demo.is_empty() {
-            self.demo = crate::demo::devices().into_iter().map(|d| Runtime::new(d, Sink::Virtual)).collect();
+            self.demo = crate::demo::devices()
+                .into_iter()
+                .map(|d| Runtime::new(d, Sink::Virtual))
+                .collect();
         } else if !want {
             self.demo.clear();
         }
@@ -168,10 +181,21 @@ impl Engine {
             ambient: None,
         };
         state.refresh_demo();
-        let shared = Arc::new(Shared { state: Mutex::new(state), wake: Condvar::new(), stop: AtomicBool::new(false), listener });
+        let shared = Arc::new(Shared {
+            state: Mutex::new(state),
+            wake: Condvar::new(),
+            stop: AtomicBool::new(false),
+            listener,
+        });
         let s = shared.clone();
-        let thread = thread::Builder::new().name("lumora-engine".into()).spawn(move || run(s)).expect("spawn engine thread");
-        Engine { shared, thread: Some(thread) }
+        let thread = thread::Builder::new()
+            .name("lumora-engine".into())
+            .spawn(move || run(s))
+            .expect("spawn engine thread");
+        Engine {
+            shared,
+            thread: Some(thread),
+        }
     }
 
     fn update(&self, f: impl FnOnce(&mut State)) {
@@ -188,7 +212,8 @@ impl Engine {
                 .devices()
                 .map(|d| {
                     let mut info = d.info.clone();
-                    info.managed = d.info.virtual_device || s.settings.controls(&info.id, &info.vendor);
+                    info.managed =
+                        d.info.virtual_device || s.settings.controls(&info.id, &info.vendor);
                     info
                 })
                 .collect(),
@@ -238,7 +263,11 @@ impl Engine {
 
     pub fn session(&self, active_profile: Option<String>) -> Session {
         let s = self.shared.lock();
-        Session { lighting: s.lighting.clone(), enabled: s.enabled, active_profile }
+        Session {
+            lighting: s.lighting.clone(),
+            enabled: s.enabled,
+            active_profile,
+        }
     }
 
     pub fn load_lighting(&self, mut p: Profile) {
@@ -303,8 +332,19 @@ impl Drop for Engine {
     }
 }
 
-fn set_connection(shared: &Shared, status: ConnectionStatus, server: String, message: impl Into<String>, protocol: u32) {
-    let info = ConnectionInfo { status, server, message: message.into(), protocol };
+fn set_connection(
+    shared: &Shared,
+    status: ConnectionStatus,
+    server: String,
+    message: impl Into<String>,
+    protocol: u32,
+) {
+    let info = ConnectionInfo {
+        status,
+        server,
+        message: message.into(),
+        protocol,
+    };
     let mut s = shared.lock();
     if s.connection != info {
         s.connection = info;
@@ -341,12 +381,22 @@ fn spawn_connect(host: String, port: u16, existing: Option<Client>) -> Receiver<
             for i in 0..count {
                 match c.controller(i) {
                     Ok(ctrl) => found.push((i, ctrl)),
-                    Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::InvalidData) => skipped += 1,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::InvalidData
+                        ) =>
+                    {
+                        skipped += 1
+                    }
                     Err(e) => return Err(e),
                 }
             }
             if count > 0 && found.is_empty() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "none of the devices answered"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "none of the devices answered",
+                ));
             }
             Ok((c, found, skipped))
         })();
@@ -356,7 +406,12 @@ fn spawn_connect(host: String, port: u16, existing: Option<Client>) -> Receiver<
 }
 
 /// Swaps freshly read controllers in as the real device list.
-fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controller)>, skipped: usize) -> std::io::Result<()> {
+fn install(
+    shared: &Shared,
+    client: &mut Client,
+    controllers: Vec<(u32, Controller)>,
+    skipped: usize,
+) -> std::io::Result<()> {
     let plain: Vec<Controller> = controllers.iter().map(|(_, c)| c.clone()).collect();
     let ids = stable_ids(&plain);
     let runtimes: Vec<Runtime> = controllers
@@ -373,9 +428,14 @@ fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controll
         for d in &runtimes {
             if let Some(sizes) = s.settings.zone_sizes.get(&d.info.id) {
                 for (&zone, &want) in sizes {
-                    let Some(z) = d.info.zones.get(zone) else { continue };
-                    let fits = z.resizable.is_some_and(|(lo, hi)| (lo..=hi).contains(&want));
-                    if fits && z.count != want && s.restored_sizes.insert((d.info.id.clone(), zone)) {
+                    let Some(z) = d.info.zones.get(zone) else {
+                        continue;
+                    };
+                    let fits = z
+                        .resizable
+                        .is_some_and(|(lo, hi)| (lo..=hi).contains(&want));
+                    if fits && z.count != want && s.restored_sizes.insert((d.info.id.clone(), zone))
+                    {
                         fixes.push((d.info.id.clone(), zone, want));
                     }
                 }
@@ -393,7 +453,13 @@ fn install(shared: &Shared, client: &mut Client, controllers: Vec<(u32, Controll
     if skipped > 0 {
         message.push_str(&format!(" ({skipped} not responding)"));
     }
-    set_connection(shared, ConnectionStatus::Connected, client.server.clone(), message, client.protocol);
+    set_connection(
+        shared,
+        ConnectionStatus::Connected,
+        client.server.clone(),
+        message,
+        client.protocol,
+    );
     shared.changed();
     Ok(())
 }
@@ -441,10 +507,13 @@ fn run(shared: Arc<Shared>) {
                 let resizes: Vec<(u32, usize, usize)> = std::mem::take(&mut s.resizes)
                     .into_iter()
                     .filter_map(|(id, zone, size)| {
-                        s.real.iter().find(|d| d.info.id == id).and_then(|d| match d.sink {
-                            Sink::OpenRgb(i) => Some((i, zone, size)),
-                            Sink::Virtual => None,
-                        })
+                        s.real
+                            .iter()
+                            .find(|d| d.info.id == id)
+                            .and_then(|d| match d.sink {
+                                Sink::OpenRgb(i) => Some((i, zone, size)),
+                                Sink::Virtual => None,
+                            })
                     })
                     .collect();
                 (resizes, std::mem::take(&mut s.rescan))
@@ -467,11 +536,19 @@ fn run(shared: Arc<Shared>) {
         conn = match conn {
             Conn::Ready(c) if !c.is_alive() => {
                 drop_real_devices(&shared);
-                set_connection(&shared, ConnectionStatus::Offline, server.clone(), "Lost connection to OpenRGB", 0);
+                set_connection(
+                    &shared,
+                    ConnectionStatus::Offline,
+                    server.clone(),
+                    "Lost connection to OpenRGB",
+                    0,
+                );
                 next_attempt = Instant::now() + Duration::from_secs(2);
                 Conn::Idle
             }
-            Conn::Ready(c) if refresh || c.take_list_updated() => Conn::Pending(spawn_connect(host.clone(), port, Some(c))),
+            Conn::Ready(c) if refresh || c.take_list_updated() => {
+                Conn::Pending(spawn_connect(host.clone(), port, Some(c)))
+            }
             Conn::Idle if Instant::now() >= next_attempt => {
                 if failures == 0 {
                     set_connection(&shared, ConnectionStatus::Connecting, server.clone(), "", 0);
@@ -479,35 +556,49 @@ fn run(shared: Arc<Shared>) {
                 Conn::Pending(spawn_connect(host.clone(), port, None))
             }
             Conn::Pending(rx) => match rx.try_recv() {
-                Ok(Ok((mut c, controllers, skipped))) => match install(&shared, &mut c, controllers, skipped) {
-                    Ok(()) => {
-                        failures = 0;
-                        // Retry a few times, further apart each time (20s, 60s, 3 min).
-                        retry_at = if skipped > 0 && retries < 3 {
-                            retries += 1;
-                            Some(Instant::now() + Duration::from_secs([20, 60, 180][retries as usize - 1]))
-                        } else {
-                            if skipped == 0 {
-                                retries = 0;
-                            }
-                            None
-                        };
-                        Conn::Ready(c)
+                Ok(Ok((mut c, controllers, skipped))) => {
+                    match install(&shared, &mut c, controllers, skipped) {
+                        Ok(()) => {
+                            failures = 0;
+                            // Retry a few times, further apart each time (20s, 60s, 3 min).
+                            retry_at = if skipped > 0 && retries < 3 {
+                                retries += 1;
+                                Some(
+                                    Instant::now()
+                                        + Duration::from_secs([20, 60, 180][retries as usize - 1]),
+                                )
+                            } else {
+                                if skipped == 0 {
+                                    retries = 0;
+                                }
+                                None
+                            };
+                            Conn::Ready(c)
+                        }
+                        Err(_) => Conn::Idle,
                     }
-                    Err(_) => Conn::Idle,
-                },
+                }
                 Ok(Err(e)) => {
                     failures += 1;
                     drop_real_devices(&shared);
                     let message = match e.kind() {
-                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut | std::io::ErrorKind::NotFound => {
+                        std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::NotFound => {
                             "OpenRGB isn't running, or its SDK server is off".to_string()
                         }
                         _ => format!("Couldn't read your devices: {e}"),
                     };
-                    set_connection(&shared, ConnectionStatus::Offline, server.clone(), message, 0);
+                    set_connection(
+                        &shared,
+                        ConnectionStatus::Offline,
+                        server.clone(),
+                        message,
+                        0,
+                    );
                     // Back off gently: 2s, 4s … capped at 10s.
-                    next_attempt = Instant::now() + Duration::from_secs((2 * failures as u64).clamp(2, 10));
+                    next_attempt =
+                        Instant::now() + Duration::from_secs((2 * failures as u64).clamp(2, 10));
                     Conn::Idle
                 }
                 Err(TryRecvError::Empty) => Conn::Pending(rx),
@@ -518,7 +609,11 @@ fn run(shared: Arc<Shared>) {
 
         // --- Render -------------------------------------------------------------
         let now = Instant::now();
-        let frame = Frame { t: (now - start).as_secs_f32(), dt: (now - last).as_secs_f32().min(0.25), temp: None };
+        let frame = Frame {
+            t: (now - start).as_secs_f32(),
+            dt: (now - last).as_secs_f32().min(0.25),
+            temp: None,
+        };
         last = now;
 
         let mut outgoing: Vec<(u32, Vec<Rgb>)> = Vec::new();
@@ -531,7 +626,11 @@ fn run(shared: Arc<Shared>) {
             let fading = (s.fade - target).abs() > f32::EPSILON;
             if fading {
                 let step = frame.dt * 3.0;
-                s.fade = if s.fade < target { (s.fade + step).min(target) } else { (s.fade - step).max(target) };
+                s.fade = if s.fade < target {
+                    (s.fade + step).min(target)
+                } else {
+                    (s.fade - step).max(target)
+                };
             }
             let b = s.lighting.brightness as f32 / 100.0;
             // Perceptual curve: LEDs look far brighter than their PWM duty.
@@ -552,7 +651,10 @@ fn run(shared: Arc<Shared>) {
                     }
                     continue;
                 }
-                let cfg = lighting.overrides.get(&d.info.id).unwrap_or(&lighting.global);
+                let cfg = lighting
+                    .overrides
+                    .get(&d.info.id)
+                    .unwrap_or(&lighting.global);
                 if d.cfg.as_ref() != Some(cfg) {
                     d.effect = Some(effects::build(cfg, d.info.led_count));
                     d.cfg = Some(cfg.clone());
@@ -577,7 +679,10 @@ fn run(shared: Arc<Shared>) {
                     }
                 }
                 if preview && d.previewed.as_ref() != Some(&out) {
-                    previews.push((d.info.id.clone(), out.iter().flat_map(|c| [c.r, c.g, c.b]).collect()));
+                    previews.push((
+                        d.info.id.clone(),
+                        out.iter().flat_map(|c| [c.r, c.g, c.b]).collect(),
+                    ));
                     d.previewed = Some(out);
                 }
             }

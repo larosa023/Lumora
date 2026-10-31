@@ -47,7 +47,11 @@ impl Default for EffectConfig {
     fn default() -> Self {
         EffectConfig {
             effect: "color_wave".into(),
-            colors: vec![Rgb::new(0x7c, 0x5c, 0xff), Rgb::new(0x00, 0xd4, 0xff), Rgb::new(0xff, 0x3d, 0xa8)],
+            colors: vec![
+                Rgb::new(0x7c, 0x5c, 0xff),
+                Rgb::new(0x00, 0xd4, 0xff),
+                Rgb::new(0xff, 0x3d, 0xa8),
+            ],
             speed: 40,
             size: 50,
             direction: Direction::Right,
@@ -111,18 +115,138 @@ fn d(
 /// Every built-in effect, in display order.
 pub fn catalog() -> Vec<EffectDescriptor> {
     vec![
-        d("static", "Static", "One solid color", "Solid", (1, 1), false, None, false, &["#7c5cff"]),
-        d("gradient", "Gradient", "A still blend across your LEDs", "Solid", (2, 6), false, None, true, &["#ff3d7f", "#7c5cff", "#00d4ff"]),
-        d("breathing", "Breathing", "Slow fade in and out, cycling colors", "Calm", (1, 6), true, None, false, &["#00d4ff", "#7c5cff"]),
-        d("spectrum", "Spectrum", "Everything drifts through the rainbow", "Calm", (0, 0), true, None, false, &[]),
-        d("aurora", "Aurora", "Soft, shifting northern lights", "Calm", (2, 6), true, Some("Scale"), false, &["#00ffa3", "#00b3ff", "#8a5cff", "#ff4fd8"]),
-        d("rainbow_wave", "Rainbow", "The classic rolling rainbow", "Wave", (0, 0), true, Some("Wavelength"), true, &[]),
-        d("color_wave", "Color Wave", "Your colors rolling across", "Wave", (2, 6), true, Some("Wavelength"), true, &["#7c5cff", "#00d4ff", "#ff3da8"]),
-        d("ripple", "Ripple", "Rings pulsing out from the center", "Wave", (1, 6), true, Some("Ring width"), true, &["#00d4ff", "#ff3da8"]),
-        d("comet", "Comet", "A bright head with a fading tail", "Motion", (1, 2), true, Some("Tail length"), true, &["#ffffff", "#2a0f5c"]),
-        d("marquee", "Marquee", "Theater-style chasing dashes", "Motion", (1, 4), true, Some("Dash size"), true, &["#ffb000", "#ff3d7f"]),
-        d("twinkle", "Starfield", "Random sparkles fading in and out", "Motion", (1, 6), true, Some("Density"), false, &["#ffffff", "#9ad7ff", "#c7a6ff"]),
-        d("fire", "Fire", "Flickering flames", "Motion", (3, 3), true, Some("Flame height"), true, &["#ff1e00", "#ff8a00", "#ffe066"]),
+        d(
+            "static",
+            "Static",
+            "One solid color",
+            "Solid",
+            (1, 1),
+            false,
+            None,
+            false,
+            &["#7c5cff"],
+        ),
+        d(
+            "gradient",
+            "Gradient",
+            "A still blend across your LEDs",
+            "Solid",
+            (2, 6),
+            false,
+            None,
+            true,
+            &["#ff3d7f", "#7c5cff", "#00d4ff"],
+        ),
+        d(
+            "breathing",
+            "Breathing",
+            "Slow fade in and out, cycling colors",
+            "Calm",
+            (1, 6),
+            true,
+            None,
+            false,
+            &["#00d4ff", "#7c5cff"],
+        ),
+        d(
+            "spectrum",
+            "Spectrum",
+            "Everything drifts through the rainbow",
+            "Calm",
+            (0, 0),
+            true,
+            None,
+            false,
+            &[],
+        ),
+        d(
+            "aurora",
+            "Aurora",
+            "Soft, shifting northern lights",
+            "Calm",
+            (2, 6),
+            true,
+            Some("Scale"),
+            false,
+            &["#00ffa3", "#00b3ff", "#8a5cff", "#ff4fd8"],
+        ),
+        d(
+            "rainbow_wave",
+            "Rainbow",
+            "The classic rolling rainbow",
+            "Wave",
+            (0, 0),
+            true,
+            Some("Wavelength"),
+            true,
+            &[],
+        ),
+        d(
+            "color_wave",
+            "Color Wave",
+            "Your colors rolling across",
+            "Wave",
+            (2, 6),
+            true,
+            Some("Wavelength"),
+            true,
+            &["#7c5cff", "#00d4ff", "#ff3da8"],
+        ),
+        d(
+            "ripple",
+            "Ripple",
+            "Rings pulsing out from the center",
+            "Wave",
+            (1, 6),
+            true,
+            Some("Ring width"),
+            true,
+            &["#00d4ff", "#ff3da8"],
+        ),
+        d(
+            "comet",
+            "Comet",
+            "A bright head with a fading tail",
+            "Motion",
+            (1, 2),
+            true,
+            Some("Tail length"),
+            true,
+            &["#ffffff", "#2a0f5c"],
+        ),
+        d(
+            "marquee",
+            "Marquee",
+            "Theater-style chasing dashes",
+            "Motion",
+            (1, 4),
+            true,
+            Some("Dash size"),
+            true,
+            &["#ffb000", "#ff3d7f"],
+        ),
+        d(
+            "twinkle",
+            "Starfield",
+            "Random sparkles fading in and out",
+            "Motion",
+            (1, 6),
+            true,
+            Some("Density"),
+            false,
+            &["#ffffff", "#9ad7ff", "#c7a6ff"],
+        ),
+        d(
+            "fire",
+            "Fire",
+            "Flickering flames",
+            "Motion",
+            (3, 3),
+            true,
+            Some("Flame height"),
+            true,
+            &["#ff1e00", "#ff8a00", "#ffe066"],
+        ),
         EffectDescriptor {
             uses_temperature: true,
             ..d(
@@ -193,7 +317,10 @@ pub fn build(cfg: &EffectConfig, led_count: usize) -> Box<dyn Effect> {
         if cfg.colors.len() < desc.min_colors as usize {
             let mut fill = desc.default_colors.clone();
             fill.retain(|c| !cfg.colors.contains(c));
-            cfg.colors.extend(fill.into_iter().take(desc.min_colors as usize - cfg.colors.len()));
+            cfg.colors.extend(
+                fill.into_iter()
+                    .take(desc.min_colors as usize - cfg.colors.len()),
+            );
         }
         if desc.max_colors > 0 {
             cfg.colors.truncate(desc.max_colors as usize);
@@ -211,14 +338,43 @@ pub fn build(cfg: &EffectConfig, led_count: usize) -> Box<dyn Effect> {
         "gradient" => Box::new(Gradient { colors, dir }),
         "breathing" => Box::new(Breathing { colors, speed }),
         "spectrum" => Box::new(Spectrum { speed }),
-        "aurora" => Box::new(Aurora { colors, speed, size }),
+        "aurora" => Box::new(Aurora {
+            colors,
+            speed,
+            size,
+        }),
         "rainbow_wave" => Box::new(RainbowWave { speed, size, dir }),
-        "color_wave" => Box::new(ColorWave { colors, speed, size, dir }),
-        "ripple" => Box::new(Ripple { colors, speed, size, dir }),
-        "comet" => Box::new(Comet { colors, speed, size, dir }),
-        "marquee" => Box::new(Marquee { colors, speed, size, dir }),
+        "color_wave" => Box::new(ColorWave {
+            colors,
+            speed,
+            size,
+            dir,
+        }),
+        "ripple" => Box::new(Ripple {
+            colors,
+            speed,
+            size,
+            dir,
+        }),
+        "comet" => Box::new(Comet {
+            colors,
+            speed,
+            size,
+            dir,
+        }),
+        "marquee" => Box::new(Marquee {
+            colors,
+            speed,
+            size,
+            dir,
+        }),
         "twinkle" => Box::new(Twinkle::new(colors, speed, size, led_count)),
-        "fire" => Box::new(Fire { colors, speed, size, dir }),
+        "fire" => Box::new(Fire {
+            colors,
+            speed,
+            size,
+            dir,
+        }),
         "temperature" => Box::new(Temperature::new(colors, cfg_temps.0, cfg_temps.1)),
         _ => Box::new(Static { color: colors[0] }),
     }
@@ -312,7 +468,11 @@ struct Ripple {
 impl Effect for Ripple {
     fn render(&mut self, f: &Frame, leds: &[LedPos], out: &mut [Rgb]) {
         // Ripples default to radiating outward; In/Out pick the sense.
-        let dir = if self.dir == Direction::In { Direction::In } else { Direction::Out };
+        let dir = if self.dir == Direction::In {
+            Direction::In
+        } else {
+            Direction::Out
+        };
         let n = self.colors.len() as i64;
         for (o, p) in out.iter_mut().zip(leds) {
             let v = along(*p, dir) * 2.0 / self.size - f.t * self.speed * 0.8;
@@ -336,7 +496,11 @@ impl Effect for Comet {
         let bg = self.colors.get(1).copied().unwrap_or(Rgb::BLACK);
         for (o, p) in out.iter_mut().zip(leds) {
             let dist = (head - along(*p, self.dir)).rem_euclid(1.0);
-            let k = if dist < tail { (1.0 - dist / tail).powi(2) } else { 0.0 };
+            let k = if dist < tail {
+                (1.0 - dist / tail).powi(2)
+            } else {
+                0.0
+            };
             *o = bg.lerp(self.colors[0], k);
         }
     }
@@ -415,7 +579,8 @@ impl Effect for Twinkle {
                 self.level[i] = (self.level[i] - rate * 0.6 * f.dt).max(0.0);
             } else if self.rng.next_f32() < spawn {
                 self.rising[i] = true;
-                self.pick[i] = (self.rng.next_f32() * self.colors.len() as f32) as usize % self.colors.len();
+                self.pick[i] =
+                    (self.rng.next_f32() * self.colors.len() as f32) as usize % self.colors.len();
             }
             out[i] = self.colors[self.pick[i]].scale(smooth(self.level[i]));
         }
@@ -465,10 +630,19 @@ impl Effect for Fire {
         // Flames rise *against* the chosen direction's travel: "Up" means the
         // base is at the bottom of the device.
         let t = f.t * self.speed * 1.6;
-        let palette = [Rgb::BLACK, self.colors[0], self.colors[1 % self.colors.len()], self.colors[2 % self.colors.len()]];
+        let palette = [
+            Rgb::BLACK,
+            self.colors[0],
+            self.colors[1 % self.colors.len()],
+            self.colors[2 % self.colors.len()],
+        ];
         for (i, (o, p)) in out.iter_mut().zip(leds).enumerate() {
             let height = along(*p, self.dir);
-            let across = if matches!(self.dir, Direction::Up | Direction::Down) { p.x } else { p.y };
+            let across = if matches!(self.dir, Direction::Up | Direction::Down) {
+                p.x
+            } else {
+                p.y
+            };
             let flicker = noise(across * 6.0 + i as f32 * 0.37, t - height * 2.0);
             let flicker = flicker * 0.7 + 0.3 * noise(across * 13.0, t * 2.3);
             let reach = 0.35 + 0.45 * self.size.min(2.0);
@@ -491,7 +665,12 @@ struct Temperature {
 impl Temperature {
     fn new(colors: Vec<Rgb>, low: u8, high: u8) -> Self {
         let (low, high) = (low.min(high) as f32, low.max(high) as f32);
-        Temperature { colors, low, high: if high > low { high } else { low + 1.0 }, shown: None }
+        Temperature {
+            colors,
+            low,
+            high: if high > low { high } else { low + 1.0 },
+            shown: None,
+        }
     }
 
     /// 0..=1 position of `temp` in the range.
@@ -516,7 +695,11 @@ impl Effect for Temperature {
         let level = self.level(shown);
         let base = sample(&self.colors, level, false);
         let hot = shown >= self.high;
-        let pulse = if hot { 0.65 + 0.35 * (0.5 + 0.5 * (f.t * std::f32::consts::TAU * 0.8).cos()) } else { 1.0 };
+        let pulse = if hot {
+            0.65 + 0.35 * (0.5 + 0.5 * (f.t * std::f32::consts::TAU * 0.8).cos())
+        } else {
+            1.0
+        };
         for (o, p) in out.iter_mut().zip(leds) {
             // A slow shimmer so it reads as live, not frozen.
             let shimmer = 0.86 + 0.14 * noise(p.x * 3.0 + f.t * 0.4, p.y * 2.0 + 11.0);
@@ -530,18 +713,35 @@ mod tests {
     use super::*;
 
     fn strip(n: usize) -> Vec<LedPos> {
-        (0..n).map(|i| LedPos { x: i as f32 / (n - 1) as f32, y: 0.5 }).collect()
+        (0..n)
+            .map(|i| LedPos {
+                x: i as f32 / (n - 1) as f32,
+                y: 0.5,
+            })
+            .collect()
     }
 
     #[test]
     fn every_effect_renders() {
         let leds = strip(30);
         for e in catalog() {
-            let cfg = EffectConfig { effect: e.id.into(), colors: e.default_colors.clone(), ..Default::default() };
+            let cfg = EffectConfig {
+                effect: e.id.into(),
+                colors: e.default_colors.clone(),
+                ..Default::default()
+            };
             let mut fx = build(&cfg, leds.len());
             let mut out = vec![Rgb::BLACK; leds.len()];
             for k in 0..60 {
-                fx.render(&Frame { t: k as f32 / 30.0, dt: 1.0 / 30.0, temp: Some(30.0 + k as f32) }, &leds, &mut out);
+                fx.render(
+                    &Frame {
+                        t: k as f32 / 30.0,
+                        dt: 1.0 / 30.0,
+                        temp: Some(30.0 + k as f32),
+                    },
+                    &leds,
+                    &mut out,
+                );
             }
             assert_eq!(out.len(), 30, "{}", e.id);
         }
@@ -549,9 +749,24 @@ mod tests {
 
     #[test]
     fn static_is_static() {
-        let mut fx = build(&EffectConfig { effect: "static".into(), colors: vec![Rgb::new(1, 2, 3)], ..Default::default() }, 3);
+        let mut fx = build(
+            &EffectConfig {
+                effect: "static".into(),
+                colors: vec![Rgb::new(1, 2, 3)],
+                ..Default::default()
+            },
+            3,
+        );
         let mut out = vec![Rgb::BLACK; 3];
-        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &strip(3), &mut out);
+        fx.render(
+            &Frame {
+                t: 0.0,
+                dt: 0.0,
+                temp: None,
+            },
+            &strip(3),
+            &mut out,
+        );
         assert!(fx.is_static());
         assert_eq!(out, vec![Rgb::new(1, 2, 3); 3]);
     }
@@ -559,18 +774,55 @@ mod tests {
     #[test]
     fn missing_colors_are_filled() {
         // Fire needs three colors; give it none and it should still render.
-        let mut fx = build(&EffectConfig { effect: "fire".into(), colors: vec![], ..Default::default() }, 10);
+        let mut fx = build(
+            &EffectConfig {
+                effect: "fire".into(),
+                colors: vec![],
+                ..Default::default()
+            },
+            10,
+        );
         let mut out = vec![Rgb::BLACK; 10];
-        fx.render(&Frame { t: 1.0, dt: 0.03, temp: None }, &strip(10), &mut out);
+        fx.render(
+            &Frame {
+                t: 1.0,
+                dt: 0.03,
+                temp: None,
+            },
+            &strip(10),
+            &mut out,
+        );
     }
 
     #[test]
     fn wave_moves() {
         let leds = strip(10);
-        let mut fx = build(&EffectConfig { effect: "rainbow_wave".into(), ..Default::default() }, 10);
+        let mut fx = build(
+            &EffectConfig {
+                effect: "rainbow_wave".into(),
+                ..Default::default()
+            },
+            10,
+        );
         let (mut a, mut b) = (vec![Rgb::BLACK; 10], vec![Rgb::BLACK; 10]);
-        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &leds, &mut a);
-        fx.render(&Frame { t: 0.5, dt: 0.5, temp: None }, &leds, &mut b);
+        fx.render(
+            &Frame {
+                t: 0.0,
+                dt: 0.0,
+                temp: None,
+            },
+            &leds,
+            &mut a,
+        );
+        fx.render(
+            &Frame {
+                t: 0.5,
+                dt: 0.5,
+                temp: None,
+            },
+            &leds,
+            &mut b,
+        );
         assert_ne!(a, b);
     }
 
@@ -586,20 +838,52 @@ mod tests {
         };
         let mut fx = build(&cfg, 4);
         let mut out = vec![Rgb::BLACK; 4];
-        fx.render(&Frame { t: 0.0, dt: 0.0, temp: Some(30.0) }, &leds, &mut out);
-        assert!(out.iter().all(|c| c.b > 150 && c.r < 20), "cool end is the first color: {out:?}");
+        fx.render(
+            &Frame {
+                t: 0.0,
+                dt: 0.0,
+                temp: Some(30.0),
+            },
+            &leds,
+            &mut out,
+        );
+        assert!(
+            out.iter().all(|c| c.b > 150 && c.r < 20),
+            "cool end is the first color: {out:?}"
+        );
         let mut fx = build(&cfg, 4);
-        fx.render(&Frame { t: 0.0, dt: 0.0, temp: Some(39.9) }, &leds, &mut out);
-        assert!(out.iter().all(|c| c.r > 150 && c.b < 30), "hot end is the last color: {out:?}");
+        fx.render(
+            &Frame {
+                t: 0.0,
+                dt: 0.0,
+                temp: Some(39.9),
+            },
+            &leds,
+            &mut out,
+        );
+        assert!(
+            out.iter().all(|c| c.r > 150 && c.b < 30),
+            "hot end is the last color: {out:?}"
+        );
         // No reading: a dim glow, not darkness and not full brightness.
         let mut fx = build(&cfg, 4);
-        fx.render(&Frame { t: 0.0, dt: 0.0, temp: None }, &leds, &mut out);
+        fx.render(
+            &Frame {
+                t: 0.0,
+                dt: 0.0,
+                temp: None,
+            },
+            &leds,
+            &mut out,
+        );
         assert!(out.iter().all(|c| c.b > 10 && c.b < 90));
     }
 
     #[test]
     fn config_json_is_friendly() {
-        let cfg: EffectConfig = serde_json::from_str(r##"{"effect":"comet","colors":["#ff0000"],"direction":"left"}"##).unwrap();
+        let cfg: EffectConfig =
+            serde_json::from_str(r##"{"effect":"comet","colors":["#ff0000"],"direction":"left"}"##)
+                .unwrap();
         assert_eq!(cfg.speed, EffectConfig::default().speed);
         assert_eq!(cfg.direction, Direction::Left);
         assert!(serde_json::to_string(&cfg).unwrap().contains("\"#ff0000\""));

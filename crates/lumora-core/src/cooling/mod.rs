@@ -12,8 +12,8 @@
 
 pub mod curve;
 pub mod fake;
-pub mod glyphs;
 pub mod family;
+pub mod glyphs;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod hydro;
@@ -21,6 +21,8 @@ pub mod kraken;
 pub mod manager;
 pub mod relay;
 pub mod screen;
+#[cfg(all(windows, feature = "usb"))]
+pub mod siusbxp;
 #[cfg(feature = "usb")]
 pub mod usb;
 
@@ -78,7 +80,10 @@ pub trait Backend: Send {
     }
     /// Opens the cooler's bulk connection, for coolers that take pictures.
     fn open_bulk(&mut self, _cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "this cooler doesn't take pictures"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this cooler doesn't take pictures",
+        ))
     }
 }
 
@@ -90,7 +95,10 @@ pub struct MultiBackend {
 
 impl MultiBackend {
     pub fn new(backends: Vec<Box<dyn Backend>>) -> Self {
-        MultiBackend { backends, owners: BTreeMap::new() }
+        MultiBackend {
+            backends,
+            owners: BTreeMap::new(),
+        }
     }
 }
 
@@ -108,12 +116,18 @@ impl Backend for MultiBackend {
     }
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
-        let i = *self.owners.get(&cooler.id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
+        let i = *self
+            .owners
+            .get(&cooler.id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
         self.backends[i].open(cooler)
     }
 
     fn open_bulk(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
-        let i = *self.owners.get(&cooler.id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
+        let i = *self
+            .owners
+            .get(&cooler.id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler was unplugged"))?;
         self.backends[i].open_bulk(cooler)
     }
 }
@@ -175,14 +189,19 @@ impl ScreenSettings {
     pub fn sources(&self) -> Vec<String> {
         let mut v: Vec<String> = self.readings.iter().take(2).cloned().collect();
         if v.is_empty() {
-            v.push(if self.source.is_empty() { "liquid".into() } else { self.source.clone() });
+            v.push(if self.source.is_empty() {
+                "liquid".into()
+            } else {
+                self.source.clone()
+            });
         }
         v
     }
 
     /// Lumora draws live readings on the screen (so it redraws as they change).
     pub fn shows_readings(&self) -> bool {
-        self.mode == ScreenMode::Temperature || (self.overlay && matches!(self.mode, ScreenMode::Color | ScreenMode::Image))
+        self.mode == ScreenMode::Temperature
+            || (self.overlay && matches!(self.mode, ScreenMode::Color | ScreenMode::Image))
     }
 }
 
@@ -240,7 +259,11 @@ pub struct LightSettings {
 
 impl Default for LightSettings {
     fn default() -> Self {
-        LightSettings { mode: LightMode::Static, colors: vec!["#7c5cff".into(), "#00d2ff".into()], speed: LightSpeed::Normal }
+        LightSettings {
+            mode: LightMode::Static,
+            colors: vec!["#7c5cff".into(), "#00d2ff".into()],
+            speed: LightSpeed::Normal,
+        }
     }
 }
 

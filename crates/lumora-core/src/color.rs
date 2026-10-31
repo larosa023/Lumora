@@ -21,7 +21,11 @@ impl Rgb {
         let s = s.trim().trim_start_matches('#');
         let parse = |h: &str| u8::from_str_radix(h, 16).ok();
         match s.len() {
-            6 => Some(Rgb::new(parse(&s[0..2])?, parse(&s[2..4])?, parse(&s[4..6])?)),
+            6 => Some(Rgb::new(
+                parse(&s[0..2])?,
+                parse(&s[2..4])?,
+                parse(&s[4..6])?,
+            )),
             3 => {
                 let c = |i: usize| parse(&s[i..i + 1]).map(|v| v * 17);
                 Some(Rgb::new(c(0)?, c(1)?, c(2)?))

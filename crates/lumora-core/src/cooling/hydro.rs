@@ -23,9 +23,21 @@ pub struct HydroModel {
 }
 
 pub const MODELS: &[HydroModel] = &[
-    HydroModel { pid: 0x0C12, name: "H150i Pro", fans: 3 },
-    HydroModel { pid: 0x0C13, name: "H115i Pro", fans: 2 },
-    HydroModel { pid: 0x0C15, name: "H100i Pro", fans: 2 },
+    HydroModel {
+        pid: 0x0C12,
+        name: "H150i Pro",
+        fans: 3,
+    },
+    HydroModel {
+        pid: 0x0C13,
+        name: "H115i Pro",
+        fans: 2,
+    },
+    HydroModel {
+        pid: 0x0C15,
+        name: "H100i Pro",
+        fans: 2,
+    },
 ];
 
 pub fn model(pid: u16) -> Option<&'static HydroModel> {
@@ -61,16 +73,25 @@ pub struct HydroPro {
 }
 
 fn timeout(what: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, format!("the cooler didn't answer ({what})"))
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("the cooler didn't answer ({what})"),
+    )
 }
 
 /// Pump mode index for a speed setting. Only the presets map exactly; other
 /// settings pick the closest mode.
 pub fn pump_mode(setting: &SpeedSetting) -> u8 {
     match setting {
-        SpeedSetting::Preset { preset: Preset::Silent } => 0,
-        SpeedSetting::Preset { preset: Preset::Balanced } => 1,
-        SpeedSetting::Preset { preset: Preset::Performance } => 2,
+        SpeedSetting::Preset {
+            preset: Preset::Silent,
+        } => 0,
+        SpeedSetting::Preset {
+            preset: Preset::Balanced,
+        } => 1,
+        SpeedSetting::Preset {
+            preset: Preset::Performance,
+        } => 2,
         SpeedSetting::Fixed { duty } if *duty < 50 => 0,
         SpeedSetting::Fixed { duty } if *duty < 80 => 1,
         SpeedSetting::Fixed { .. } => 2,
@@ -84,7 +105,9 @@ pub fn fan_points(setting: &SpeedSetting) -> [(u8, u8); MAX_CURVE_POINTS] {
     if pts.len() > MAX_CURVE_POINTS {
         // Keep the ends and an even spread between them.
         let n = pts.len();
-        pts = (0..MAX_CURVE_POINTS).map(|i| pts[i * (n - 1) / (MAX_CURVE_POINTS - 1)]).collect();
+        pts = (0..MAX_CURVE_POINTS)
+            .map(|i| pts[i * (n - 1) / (MAX_CURVE_POINTS - 1)])
+            .collect();
     }
     let mut out = [PAD_POINT; MAX_CURVE_POINTS];
     out[..pts.len()].copy_from_slice(&pts);
@@ -111,15 +134,31 @@ pub fn light_messages(s: &LightSettings) -> Vec<Vec<u8>> {
     let (colors, speed_value, mode_msg) = match s.mode {
         // One color is sent as a two-color shift between the same color.
         // Sync arrives here already resolved to the current color.
-        LightMode::Static | LightMode::Sync => (vec![colors[0], colors[0]], None, vec![CMD_LIGHT_SHIFT, 0x01]),
+        LightMode::Static | LightMode::Sync => (
+            vec![colors[0], colors[0]],
+            None,
+            vec![CMD_LIGHT_SHIFT, 0x01],
+        ),
         LightMode::Shift => {
             if colors.len() < 2 {
                 colors.push(colors[0]);
             }
-            (colors, Some(speed([0x46, 0x28, 0x0F])), vec![CMD_LIGHT_SHIFT, 0x01])
+            (
+                colors,
+                Some(speed([0x46, 0x28, 0x0F])),
+                vec![CMD_LIGHT_SHIFT, 0x01],
+            )
         }
-        LightMode::Pulse => (colors, Some(speed([0x50, 0x37, 0x1E])), vec![CMD_LIGHT_PULSE, 0x01]),
-        LightMode::Blink => (colors, Some(speed([0x0F, 0x0A, 0x05])), vec![CMD_LIGHT_BLINK, 0x01]),
+        LightMode::Pulse => (
+            colors,
+            Some(speed([0x50, 0x37, 0x1E])),
+            vec![CMD_LIGHT_PULSE, 0x01],
+        ),
+        LightMode::Blink => (
+            colors,
+            Some(speed([0x0F, 0x0A, 0x05])),
+            vec![CMD_LIGHT_BLINK, 0x01],
+        ),
     };
     let mut list = vec![CMD_LIGHT_COLORS, colors.len() as u8];
     list.extend(colors.iter().flatten());
@@ -133,7 +172,11 @@ pub fn light_messages(s: &LightSettings) -> Vec<Vec<u8>> {
 
 impl HydroPro {
     pub fn new(link: Box<dyn Link>, model: &'static HydroModel) -> Self {
-        HydroPro { link, model, firmware: None }
+        HydroPro {
+            link,
+            model,
+            firmware: None,
+        }
     }
 
     /// Sends one command and returns the cooler's answer to it.
@@ -183,7 +226,10 @@ impl Driver for HydroPro {
         }
 
         let m = self.post(&[CMD_PUMP_MODE])?;
-        let mode = m.get(3).and_then(|&i| PUMP_MODES.get(i as usize)).map(|s| s.to_string());
+        let mode = m
+            .get(3)
+            .and_then(|&i| PUMP_MODES.get(i as usize))
+            .map(|s| s.to_string());
         let m = self.post(&[CMD_PUMP_SPEED])?;
         let pump = (m.len() >= 5).then(|| u16::from_be_bytes([m[3], m[4]]) as u32);
 
@@ -218,7 +264,12 @@ impl Driver for HydroPro {
                     }
                 }
             }
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown channel")),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown channel",
+                ))
+            }
         }
         Ok(())
     }
@@ -237,7 +288,9 @@ mod tests {
 
     #[test]
     fn fan_points_are_padded_and_capped() {
-        let p = fan_points(&SpeedSetting::Preset { preset: Preset::Balanced });
+        let p = fan_points(&SpeedSetting::Preset {
+            preset: Preset::Balanced,
+        });
         assert_eq!(p[0], (20, 30));
         assert_eq!(p[4], (48, 100));
         assert_eq!(p[5], PAD_POINT);
@@ -252,16 +305,47 @@ mod tests {
 
     #[test]
     fn light_messages_follow_mode() {
-        let s = LightSettings { mode: LightMode::Static, colors: vec!["#ff8000".into()], speed: LightSpeed::Normal };
-        assert_eq!(light_messages(&s), vec![vec![0x56, 2, 0xff, 0x80, 0, 0xff, 0x80, 0], vec![0x55, 0x01]]);
-        let s = LightSettings { mode: LightMode::Pulse, colors: vec!["#010203".into(), "#040506".into()], speed: LightSpeed::Faster };
-        assert_eq!(light_messages(&s), vec![vec![0x56, 2, 1, 2, 3, 4, 5, 6], vec![0x53, 0x1E], vec![0x52, 0x01]]);
+        let s = LightSettings {
+            mode: LightMode::Static,
+            colors: vec!["#ff8000".into()],
+            speed: LightSpeed::Normal,
+        };
+        assert_eq!(
+            light_messages(&s),
+            vec![
+                vec![0x56, 2, 0xff, 0x80, 0, 0xff, 0x80, 0],
+                vec![0x55, 0x01]
+            ]
+        );
+        let s = LightSettings {
+            mode: LightMode::Pulse,
+            colors: vec!["#010203".into(), "#040506".into()],
+            speed: LightSpeed::Faster,
+        };
+        assert_eq!(
+            light_messages(&s),
+            vec![
+                vec![0x56, 2, 1, 2, 3, 4, 5, 6],
+                vec![0x53, 0x1E],
+                vec![0x52, 0x01]
+            ]
+        );
     }
 
     #[test]
     fn pump_modes_map_from_presets() {
-        assert_eq!(pump_mode(&SpeedSetting::Preset { preset: Preset::Silent }), 0);
-        assert_eq!(pump_mode(&SpeedSetting::Preset { preset: Preset::Performance }), 2);
+        assert_eq!(
+            pump_mode(&SpeedSetting::Preset {
+                preset: Preset::Silent
+            }),
+            0
+        );
+        assert_eq!(
+            pump_mode(&SpeedSetting::Preset {
+                preset: Preset::Performance
+            }),
+            2
+        );
         assert_eq!(pump_mode(&SpeedSetting::Fixed { duty: 60 }), 1);
     }
 }

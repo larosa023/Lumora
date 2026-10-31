@@ -27,11 +27,41 @@ pub struct KrakenModel {
 }
 
 pub const MODELS: &[KrakenModel] = &[
-    KrakenModel { pid: 0x3008, name: "Kraken Z", pump_id: [1, 0, 0], fan_id: Some([2, 0, 0]), lcd: Some((320, 320)) },
-    KrakenModel { pid: 0x300C, name: "Kraken Elite (2023)", pump_id: [1, 1, 0], fan_id: Some([2, 1, 1]), lcd: Some((640, 640)) },
-    KrakenModel { pid: 0x300E, name: "Kraken (2023)", pump_id: [1, 1, 0], fan_id: Some([2, 1, 1]), lcd: Some((240, 240)) },
-    KrakenModel { pid: 0x3012, name: "Kraken Elite RGB (2024)", pump_id: [1, 1, 0], fan_id: Some([2, 1, 1]), lcd: Some((640, 640)) },
-    KrakenModel { pid: 0x3014, name: "Kraken Plus (2024)", pump_id: [1, 1, 0], fan_id: Some([2, 1, 1]), lcd: Some((240, 240)) },
+    KrakenModel {
+        pid: 0x3008,
+        name: "Kraken Z",
+        pump_id: [1, 0, 0],
+        fan_id: Some([2, 0, 0]),
+        lcd: Some((320, 320)),
+    },
+    KrakenModel {
+        pid: 0x300C,
+        name: "Kraken Elite (2023)",
+        pump_id: [1, 1, 0],
+        fan_id: Some([2, 1, 1]),
+        lcd: Some((640, 640)),
+    },
+    KrakenModel {
+        pid: 0x300E,
+        name: "Kraken (2023)",
+        pump_id: [1, 1, 0],
+        fan_id: Some([2, 1, 1]),
+        lcd: Some((240, 240)),
+    },
+    KrakenModel {
+        pid: 0x3012,
+        name: "Kraken Elite RGB (2024)",
+        pump_id: [1, 1, 0],
+        fan_id: Some([2, 1, 1]),
+        lcd: Some((640, 640)),
+    },
+    KrakenModel {
+        pid: 0x3014,
+        name: "Kraken Plus (2024)",
+        pump_id: [1, 1, 0],
+        fan_id: Some([2, 1, 1]),
+        lcd: Some((240, 240)),
+    },
 ];
 
 pub fn model(pid: u16) -> Option<&'static KrakenModel> {
@@ -67,7 +97,16 @@ fn err(msg: impl Into<String>) -> io::Error {
 
 impl Kraken {
     pub fn new(io: Box<dyn Link>, model: &'static KrakenModel) -> Self {
-        Kraken { io, bulk: None, slots_ready: false, shown_slot: None, model, firmware: None, brightness: 50, orientation: 0 }
+        Kraken {
+            io,
+            bulk: None,
+            slots_ready: false,
+            shown_slot: None,
+            model,
+            firmware: None,
+            brightness: 50,
+            orientation: 0,
+        }
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
@@ -95,7 +134,9 @@ impl Kraken {
                 None => break,
             }
         }
-        Err(err(format!("the cooler didn't answer (waiting for {prefix:02x?})")))
+        Err(err(format!(
+            "the cooler didn't answer (waiting for {prefix:02x?})"
+        )))
     }
 
     /// Reads the next report that isn't a periodic status report.
@@ -161,8 +202,16 @@ impl Kraken {
     pub fn set_curve(&mut self, channel: &str, table: &[u8; 40]) -> io::Result<()> {
         let id = match channel {
             "pump" => self.model.pump_id,
-            "fan" => self.model.fan_id.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no fan channel"))?,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown channel")),
+            "fan" => self
+                .model
+                .fan_id
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no fan channel"))?,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown channel",
+                ))
+            }
         };
         let mut msg = vec![0x72, id[0], id[1], id[2]];
         msg.extend_from_slice(table);
@@ -170,7 +219,16 @@ impl Kraken {
     }
 
     fn write_screen_settings(&mut self) -> io::Result<()> {
-        self.write(&[0x30, 0x02, 0x01, self.brightness, 0x00, 0x00, 0x01, self.orientation])
+        self.write(&[
+            0x30,
+            0x02,
+            0x01,
+            self.brightness,
+            0x00,
+            0x00,
+            0x01,
+            self.orientation,
+        ])
     }
 
     pub fn set_screen(&mut self, brightness: u8, rotation: u16) -> io::Result<()> {
@@ -202,10 +260,15 @@ impl Kraken {
     /// cleared, so leftovers (from NZXT CAM, say) can't overlap them.
     pub fn show_picture(&mut self, pixels: &[u8]) -> io::Result<()> {
         if self.bulk.is_none() {
-            return Err(io::Error::new(io::ErrorKind::NotConnected, "the screen's picture connection isn't open"));
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the screen's picture connection isn't open",
+            ));
         }
         self.drain()?;
-        let mut header = vec![0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10];
+        let mut header = vec![
+            0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10,
+        ];
         // Picture type 2 (still image), then its length.
         header.extend([0x02, 0x00, 0x00, 0x00]);
         header.extend((pixels.len() as u32).to_le_bytes());
@@ -229,7 +292,17 @@ impl Kraken {
         self.ask(&[0x36, 0x03])?;
         let start = ((index as usize * size_kib) as u16).to_le_bytes();
         let size = (size_kib as u16).to_le_bytes();
-        let setup = self.ask(&[0x32, 0x01, index, index + 1, start[0], start[1], size[0], size[1], 0x01])?;
+        let setup = self.ask(&[
+            0x32,
+            0x01,
+            index,
+            index + 1,
+            start[0],
+            start[1],
+            size[0],
+            size[1],
+            0x01,
+        ])?;
         if setup.get(14) != Some(&1) {
             return Err(err("the screen didn't accept the picture slot"));
         }

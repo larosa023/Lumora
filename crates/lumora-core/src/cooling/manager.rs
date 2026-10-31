@@ -11,7 +11,10 @@ use serde::Serialize;
 
 use super::curve::{self, SpeedSetting};
 use super::family::{ChannelKind, Driver, Model};
-use super::{owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightMode, LightSettings, ScreenMode, ScreenSettings};
+use super::{
+    owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightMode, LightSettings,
+    ScreenMode, ScreenSettings,
+};
 use crate::temps;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -132,7 +135,11 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 /// Curves are written whole; spacing writes out keeps the firmware happy.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(800);
 /// Lumora's own temperature screen is redrawn at most this often.
-const LIVE_SCREEN_EVERY: Duration = if cfg!(test) { Duration::from_millis(1500) } else { Duration::from_secs(5) };
+const LIVE_SCREEN_EVERY: Duration = if cfg!(test) {
+    Duration::from_millis(1500)
+} else {
+    Duration::from_secs(5)
+};
 /// The shown number only changes when the reading moves this far from it,
 /// so a reading sitting on x.5 doesn't flip back and forth.
 const LIVE_HYSTERESIS: f32 = 0.7;
@@ -148,14 +155,18 @@ fn owner_processes(app: &str) -> &'static [&'static str] {
 }
 
 fn owner_is_running(app: &str, running: &HashSet<String>) -> bool {
-    owner_processes(app).iter().any(|stem| running.iter().any(|p| p.starts_with(stem)))
+    owner_processes(app)
+        .iter()
+        .any(|stem| running.iter().any(|p| p.starts_with(stem)))
 }
 
 /// Windows refuses writes when another app opened the cooler without sharing
 /// it, which shows up as "Access is denied".
 fn is_locked(e: &std::io::Error) -> bool {
     let text = e.to_string();
-    e.kind() == std::io::ErrorKind::PermissionDenied || text.contains("os error 5") || text.contains("Access is denied")
+    e.kind() == std::io::ErrorKind::PermissionDenied
+        || text.contains("os error 5")
+        || text.contains("Access is denied")
 }
 
 fn open_error_message(e: &std::io::Error, owner: Option<&str>) -> String {
@@ -170,9 +181,18 @@ fn open_error_message(e: &std::io::Error, owner: Option<&str>) -> String {
 }
 
 impl CoolingManager {
-    pub fn new(backend: Box<dyn Backend>, configs: BTreeMap<String, CoolerConfig>, owner_check: OwnerCheck, listener: Listener) -> CoolingManager {
+    pub fn new(
+        backend: Box<dyn Backend>,
+        configs: BTreeMap<String, CoolerConfig>,
+        owner_check: OwnerCheck,
+        listener: Listener,
+    ) -> CoolingManager {
         let shared = Arc::new(Shared {
-            inner: Mutex::new(Inner { configs, coolers: Vec::new(), running_apps: HashSet::new() }),
+            inner: Mutex::new(Inner {
+                configs,
+                coolers: Vec::new(),
+                running_apps: HashSet::new(),
+            }),
             wake: Condvar::new(),
             stop: AtomicBool::new(false),
             listener,
@@ -182,7 +202,10 @@ impl CoolingManager {
             .name("lumora-cooling".into())
             .spawn(move || run(s, backend, owner_check))
             .expect("spawn cooling thread");
-        CoolingManager { shared, thread: Mutex::new(Some(thread)) }
+        CoolingManager {
+            shared,
+            thread: Mutex::new(Some(thread)),
+        }
     }
 
     pub fn views(&self) -> Vec<CoolerView> {
@@ -221,7 +244,12 @@ fn desired(model: &Model, cfg: &CoolerConfig) -> Applied {
     let speeds = model
         .channels()
         .into_iter()
-        .map(|ch| (ch.id.to_string(), cfg.speeds.get(ch.id).cloned().unwrap_or_default()))
+        .map(|ch| {
+            (
+                ch.id.to_string(),
+                cfg.speeds.get(ch.id).cloned().unwrap_or_default(),
+            )
+        })
         .collect();
     Applied {
         speeds,
@@ -237,7 +265,11 @@ fn resolve_light(l: &LightSettings) -> LightSettings {
         return l.clone();
     }
     let c = crate::ambient::get().unwrap_or(crate::Rgb::BLACK);
-    LightSettings { mode: LightMode::Sync, colors: vec![sync_hex(c)], speed: l.speed }
+    LightSettings {
+        mode: LightMode::Sync,
+        colors: vec![sync_hex(c)],
+        speed: l.speed,
+    }
 }
 
 fn sync_hex(c: crate::Rgb) -> String {
@@ -257,9 +289,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 name: r.model.name().to_string(),
                 vendor: r.model.vendor().into(),
                 owner_app: owner.map(String::from),
-                owner_running: owner.is_some_and(|a| {
-                    owner_is_running(a, &inner.running_apps)
-                }),
+                owner_running: owner.is_some_and(|a| owner_is_running(a, &inner.running_apps)),
                 takeover: cfg.takeover,
                 state: r.state,
                 message: r.message.clone(),
@@ -282,7 +312,11 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                         }
                     })
                     .collect(),
-                screen: r.model.screen().map(|(w, h)| ScreenView { width: w, height: h, settings: cfg.screen.clone() }),
+                screen: r.model.screen().map(|(w, h)| ScreenView {
+                    width: w,
+                    height: h,
+                    settings: cfg.screen.clone(),
+                }),
                 light: r.model.light().then(|| cfg.light.clone()),
                 needs_setup: r.found.needs_setup,
                 needs_restart: r.found.needs_restart,
@@ -296,16 +330,16 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     let now = Instant::now();
     if r.found.needs_setup {
         r.state = CoolerState::NeedsSetup;
-        r.message = r.found.problem.clone().unwrap_or_else(|| "Lumora needs a one-time setup before it can reach this cooler.".into());
+        r.message = r.found.problem.clone().unwrap_or_else(|| {
+            "Lumora needs a one-time setup before it can reach this cooler.".into()
+        });
         return;
     }
     if r.found.needs_restart {
         r.state = CoolerState::NeedsSetup;
-        r.message = r
-            .found
-            .problem
-            .clone()
-            .unwrap_or_else(|| "Setup is done. Restart your PC once so Windows lets Lumora reach this cooler.".into());
+        r.message = r.found.problem.clone().unwrap_or_else(|| {
+            "Setup is done. Restart your PC once so Windows lets Lumora reach this cooler.".into()
+        });
         return;
     }
     if r.driver.is_none() {
@@ -338,33 +372,54 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
 
     let want = desired(&r.model, cfg);
     // Readings Lumora draws on the screen: the numbers to show right now.
-    let live: Option<Vec<Option<i32>>> = want.screen.as_ref().filter(|s| s.shows_readings()).map(|s| {
-        s.sources()
-            .iter()
-            .enumerate()
-            .map(|(i, src)| {
-                let reading = if src == "liquid" { r.status.as_ref().and_then(|st| st.liquid_c) } else { temps::get(src) };
-                match (reading, r.screen_value.get(i).copied().flatten()) {
-                    (Some(t), Some(shown)) if (t - shown as f32).abs() < LIVE_HYSTERESIS => Some(shown),
-                    (Some(t), _) => Some(t.round() as i32),
-                    (None, _) => None,
-                }
-            })
-            .collect()
+    let live: Option<Vec<Option<i32>>> =
+        want.screen
+            .as_ref()
+            .filter(|s| s.shows_readings())
+            .map(|s| {
+                s.sources()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, src)| {
+                        let reading = if src == "liquid" {
+                            r.status.as_ref().and_then(|st| st.liquid_c)
+                        } else {
+                            temps::get(src)
+                        };
+                        match (reading, r.screen_value.get(i).copied().flatten()) {
+                            (Some(t), Some(shown))
+                                if (t - shown as f32).abs() < LIVE_HYSTERESIS =>
+                            {
+                                Some(shown)
+                            }
+                            (Some(t), _) => Some(t.round() as i32),
+                            (None, _) => None,
+                        }
+                    })
+                    .collect()
+            });
+    let live_due = live.as_ref().is_some_and(|v| {
+        *v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY
     });
-    let live_due = live.as_ref().is_some_and(|v| *v != r.screen_value && now.duration_since(r.screen_drawn) >= LIVE_SCREEN_EVERY);
     let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
         // Settings to apply, or the readings on the screen have moved on.
         if (r.applied != want || live_due) && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
             // One change per pass: firmware dislikes bursts of curve writes.
-            if let Some((ch, setting)) = want.speeds.iter().find(|(ch, s)| r.applied.speeds.get(*ch) != Some(s)) {
+            if let Some((ch, setting)) = want
+                .speeds
+                .iter()
+                .find(|(ch, s)| r.applied.speeds.get(*ch) != Some(s))
+            {
                 d.set_speed(ch, setting)?;
                 r.applied.speeds.insert(ch.clone(), setting.clone());
             } else if want.screen != r.applied.screen || live_due {
                 if let Some(s) = &want.screen {
                     let size = r.model.screen().map_or(0, |(w, _)| w as usize);
-                    let picture = matches!(s.mode, ScreenMode::Color | ScreenMode::Image | ScreenMode::Temperature);
+                    let picture = matches!(
+                        s.mode,
+                        ScreenMode::Color | ScreenMode::Image | ScreenMode::Temperature
+                    );
                     let values = live.clone().unwrap_or_default();
                     r.screen_value = values.clone();
                     r.screen_drawn = Instant::now();
@@ -379,7 +434,9 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
                         Ok(()) => r.notice.clear(),
                         // A picture that won't go up isn't worth dropping the
                         // cooler over: say so and keep running it.
-                        Err(e) if picture => r.notice = format!("Couldn't put that on the screen: {e}"),
+                        Err(e) if picture => {
+                            r.notice = format!("Couldn't put that on the screen: {e}")
+                        }
                         Err(e) => return Err(e),
                     }
                 }
@@ -420,11 +477,14 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
         if now >= next_discover {
             let found = backend.discover();
             let mut inner = shared.lock();
-            inner.coolers.retain(|r| found.iter().any(|f| f.id == r.found.id));
+            inner
+                .coolers
+                .retain(|r| found.iter().any(|f| f.id == r.found.id));
             for f in found {
                 if let Some(r) = inner.coolers.iter_mut().find(|r| r.found.id == f.id) {
                     // Setup (or the restart after it) may have finished.
-                    let reachable_now = (r.found.needs_setup && !f.needs_setup) || (r.found.needs_restart && !f.needs_restart);
+                    let reachable_now = (r.found.needs_setup && !f.needs_setup)
+                        || (r.found.needs_restart && !f.needs_restart);
                     r.found.needs_setup = f.needs_setup;
                     r.found.needs_restart = f.needs_restart;
                     r.found.problem = f.problem.clone();
@@ -463,14 +523,21 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                 .coolers
                 .iter()
                 .enumerate()
-                .map(|(i, r)| (i, inner.configs.get(&r.found.id).cloned().unwrap_or_default()))
+                .map(|(i, r)| {
+                    (
+                        i,
+                        inner.configs.get(&r.found.id).cloned().unwrap_or_default(),
+                    )
+                })
                 .collect()
         };
         let mut liquid = None;
         for (i, cfg) in jobs {
             let mut runtime = {
                 let mut inner = shared.lock();
-                let Some(r) = inner.coolers.get_mut(i) else { continue };
+                let Some(r) = inner.coolers.get_mut(i) else {
+                    continue;
+                };
                 // Take the runtime out briefly; a placeholder keeps indices stable.
                 let placeholder = r.shallow();
                 std::mem::replace(r, placeholder)
@@ -517,7 +584,13 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
     for r in inner.coolers.iter_mut() {
         if let (Some(d), Some(cfg)) = (r.driver.as_mut(), configs.get(&r.found.id)) {
             if cfg.takeover && cfg.screen.shows_readings() {
-                let _ = d.set_screen(&ScreenSettings { mode: ScreenMode::Liquid, ..cfg.screen.clone() }, None);
+                let _ = d.set_screen(
+                    &ScreenSettings {
+                        mode: ScreenMode::Liquid,
+                        ..cfg.screen.clone()
+                    },
+                    None,
+                );
             }
         }
     }
@@ -563,9 +636,18 @@ mod tests {
         panic!("timed out waiting for {what}");
     }
 
-    fn manager(backend: FakeBackend, configs: BTreeMap<String, CoolerConfig>, apps: &[&str]) -> CoolingManager {
+    fn manager(
+        backend: FakeBackend,
+        configs: BTreeMap<String, CoolerConfig>,
+        apps: &[&str],
+    ) -> CoolingManager {
         let apps: HashSet<String> = apps.iter().map(|s| s.to_string()).collect();
-        CoolingManager::new(Box::new(backend), configs, Box::new(move || apps.clone()), Arc::new(|_| {}))
+        CoolingManager::new(
+            Box::new(backend),
+            configs,
+            Box::new(move || apps.clone()),
+            Arc::new(|_| {}),
+        )
     }
 
     #[test]
@@ -580,7 +662,11 @@ mod tests {
         assert_eq!(v.channels.len(), 2);
         assert_eq!(v.screen.as_ref().unwrap().width, 640);
         thread::sleep(Duration::from_millis(1500));
-        assert_eq!(dev.lock().unwrap().writes, 0, "nothing is sent to a cooler left to CAM");
+        assert_eq!(
+            dev.lock().unwrap().writes,
+            0,
+            "nothing is sent to a cooler left to CAM"
+        );
     }
 
     #[test]
@@ -590,9 +676,18 @@ mod tests {
         wait("discovery", || m.views().len() == 1);
         let id = m.views()[0].id.clone();
 
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
-        cfg.speeds.insert("fan".into(), SpeedSetting::Preset { preset: Preset::Silent });
-        cfg.speeds.insert("pump".into(), SpeedSetting::Fixed { duty: 5 });
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        cfg.speeds.insert(
+            "fan".into(),
+            SpeedSetting::Preset {
+                preset: Preset::Silent,
+            },
+        );
+        cfg.speeds
+            .insert("pump".into(), SpeedSetting::Fixed { duty: 5 });
         cfg.screen.brightness = 60;
         cfg.screen.rotation = 180;
         m.set_config(&id, cfg.clone());
@@ -615,7 +710,10 @@ mod tests {
             assert_eq!(d.brightness, 60);
             assert_eq!(d.orientation, 2);
             let pump = &d.curves.iter().find(|(c, _)| c == "pump").unwrap().1;
-            assert!(pump.iter().all(|&x| x >= PUMP_MIN_DUTY), "pump minimum enforced");
+            assert!(
+                pump.iter().all(|&x| x >= PUMP_MIN_DUTY),
+                "pump minimum enforced"
+            );
             let fan = &d.curves.iter().find(|(c, _)| c == "fan").unwrap().1;
             assert_eq!(fan[0], 25);
         }
@@ -627,9 +725,20 @@ mod tests {
         assert_eq!(dev.lock().unwrap().curves.len(), curves);
 
         // A new curve goes out on its own.
-        cfg.speeds.insert("fan".into(), SpeedSetting::Custom { points: vec![(20, 45), (50, 90)] });
+        cfg.speeds.insert(
+            "fan".into(),
+            SpeedSetting::Custom {
+                points: vec![(20, 45), (50, 90)],
+            },
+        );
         m.set_config(&id, cfg.clone());
-        wait("new fan curve", || dev.lock().unwrap().curves.last().is_some_and(|(c, t)| c == "fan" && t[0] == 45));
+        wait("new fan curve", || {
+            dev.lock()
+                .unwrap()
+                .curves
+                .last()
+                .is_some_and(|(c, t)| c == "fan" && t[0] == 45)
+        });
 
         // Handing back closes the handle and stops all traffic.
         cfg.takeover = false;
@@ -645,9 +754,19 @@ mod tests {
         let (backend, dev) = FakeBackend::with_kraken(0x3012);
         dev.lock().unwrap().busy = true;
         let mut configs = BTreeMap::new();
-        configs.insert("hid:1e71:3012:FAKE0001".to_string(), CoolerConfig { takeover: true, ..Default::default() });
+        configs.insert(
+            "hid:1e71:3012:FAKE0001".to_string(),
+            CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
         let m = manager(backend, configs, &[]);
-        wait("error", || m.views().first().is_some_and(|v| v.state == CoolerState::Error));
+        wait("error", || {
+            m.views()
+                .first()
+                .is_some_and(|v| v.state == CoolerState::Error)
+        });
         assert!(m.views()[0].message.contains("isn't answering"));
         dev.lock().unwrap().busy = false;
         wait("recovered", || m.views()[0].state == CoolerState::Active);
@@ -659,23 +778,52 @@ mod tests {
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
         let v = m.views()[0].clone();
-        assert_eq!((v.vendor.as_str(), v.name.as_str()), ("Corsair", "H115i Pro"));
+        assert_eq!(
+            (v.vendor.as_str(), v.name.as_str()),
+            ("Corsair", "H115i Pro")
+        );
         assert_eq!(v.owner_app.as_deref(), Some("Corsair iCUE"));
         assert_eq!(v.channels[0].kind, ChannelKind::Modes);
         assert!(v.light.is_some() && v.screen.is_none());
         thread::sleep(Duration::from_millis(1200));
-        assert_eq!(dev.lock().unwrap().writes, 0, "left to iCUE until taken over");
+        assert_eq!(
+            dev.lock().unwrap().writes,
+            0,
+            "left to iCUE until taken over"
+        );
 
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
-        cfg.speeds.insert("pump".into(), SpeedSetting::Preset { preset: Preset::Performance });
-        cfg.speeds.insert("fan".into(), SpeedSetting::Custom { points: vec![(25, 20), (40, 60)] });
-        cfg.light = LightSettings { mode: LightMode::Pulse, colors: vec!["#ff0000".into(), "#0000ff".into()], speed: LightSpeed::Slower };
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        cfg.speeds.insert(
+            "pump".into(),
+            SpeedSetting::Preset {
+                preset: Preset::Performance,
+            },
+        );
+        cfg.speeds.insert(
+            "fan".into(),
+            SpeedSetting::Custom {
+                points: vec![(25, 20), (40, 60)],
+            },
+        );
+        cfg.light = LightSettings {
+            mode: LightMode::Pulse,
+            colors: vec!["#ff0000".into(), "#0000ff".into()],
+            speed: LightSpeed::Slower,
+        };
         m.set_config(&v.id, cfg.clone());
         wait("everything applied", || {
             let d = dev.lock().unwrap();
             d.pump_mode == 2 && d.fan_curves.len() >= 2 && d.light.len() >= 3
         });
-        wait("status", || m.views()[0].status.as_ref().is_some_and(|s| s.pump_mode.as_deref() == Some("performance")));
+        wait("status", || {
+            m.views()[0]
+                .status
+                .as_ref()
+                .is_some_and(|s| s.pump_mode.as_deref() == Some("performance"))
+        });
         let v = m.views()[0].clone();
         let s = v.status.unwrap();
         assert_eq!(v.firmware.as_deref(), Some("1.1.15.4"));
@@ -690,7 +838,8 @@ mod tests {
             assert_eq!(d.light.last().unwrap(), &vec![0x52, 0x01]);
         }
 
-        cfg.speeds.insert("fan".into(), SpeedSetting::Fixed { duty: 55 });
+        cfg.speeds
+            .insert("fan".into(), SpeedSetting::Fixed { duty: 55 });
         m.set_config(&v.id, cfg);
         wait("fixed fans", || dev.lock().unwrap().fan_fixed.len() >= 2);
         assert_eq!(dev.lock().unwrap().fan_fixed[..2], [(0, 55), (1, 55)]);
@@ -701,17 +850,32 @@ mod tests {
         let (backend, dev) = FakeBackend::with_hydro(0x0C13);
         dev.lock().unwrap().needs_setup = true;
         let mut configs = BTreeMap::new();
-        configs.insert("usb:1b1c:0c13:1-4".to_string(), CoolerConfig { takeover: true, ..Default::default() });
+        configs.insert(
+            "usb:1b1c:0c13:1-4".to_string(),
+            CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
         let m = manager(backend, configs, &[]);
-        wait("needs setup", || m.views().first().is_some_and(|v| v.state == CoolerState::NeedsSetup && v.needs_setup));
+        wait("needs setup", || {
+            m.views()
+                .first()
+                .is_some_and(|v| v.state == CoolerState::NeedsSetup && v.needs_setup)
+        });
         assert_eq!(dev.lock().unwrap().writes, 0);
         dev.lock().unwrap().needs_setup = false;
-        wait("active after setup", || m.views()[0].state == CoolerState::Active);
+        wait("active after setup", || {
+            m.views()[0].state == CoolerState::Active
+        });
     }
 
     #[test]
     fn access_denied_points_at_the_vendor_app() {
-        let e = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Access is denied. (os error 5)");
+        let e = std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "Access is denied. (os error 5)",
+        );
         let msg = open_error_message(&e, Some("NZXT CAM"));
         assert!(msg.contains("locked") && msg.contains("NZXT CAM"), "{msg}");
         let running: HashSet<String> = ["nzxt cam.exe".to_string()].into();
@@ -725,28 +889,40 @@ mod tests {
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
         let id = m.views()[0].id.clone();
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
         cfg.screen.mode = ScreenMode::Color;
         cfg.screen.colors = vec!["#ff0000".into(), "#0000ff".into()];
         m.set_config(&id, cfg.clone());
-        wait("picture shown", || dev.lock().unwrap().shown_bucket.is_some());
+        wait("picture shown", || {
+            dev.lock().unwrap().shown_bucket.is_some()
+        });
         {
             let d = dev.lock().unwrap();
             let px = 640 * 640 * 4;
             assert_eq!(d.bulk.len(), 20 + px, "header plus every pixel");
             assert_eq!(&d.bulk[..4], &[0x12, 0xFA, 0x01, 0xE8]);
             assert_eq!(&d.bulk[16..20], &(px as u32).to_le_bytes());
-            assert_eq!(&d.bulk[20..24], &[255, 0, 0, 0], "top-left is the first color");
+            assert_eq!(
+                &d.bulk[20..24],
+                &[255, 0, 0, 0],
+                "top-left is the first color"
+            );
         }
         assert!(m.views()[0].notice.is_empty());
 
         // A picture from a file, then back to the built-in screen.
-        let file = std::env::temp_dir().join(format!("lumora-screen-test-{}.rgba", std::process::id()));
+        let file =
+            std::env::temp_dir().join(format!("lumora-screen-test-{}.rgba", std::process::id()));
         std::fs::write(&file, vec![9u8; 640 * 640 * 4]).unwrap();
         cfg.screen.mode = ScreenMode::Image;
         cfg.screen.image = Some(file.display().to_string());
         m.set_config(&id, cfg.clone());
-        wait("picture from file", || dev.lock().unwrap().bulk.get(20..24) == Some(&[9, 9, 9, 0]));
+        wait("picture from file", || {
+            dev.lock().unwrap().bulk.get(20..24) == Some(&[9, 9, 9, 0])
+        });
         let _ = std::fs::remove_file(&file);
 
         cfg.screen.mode = ScreenMode::Liquid;
@@ -768,15 +944,35 @@ mod tests {
     fn corsair_follows_lumora_color() {
         let (backend, dev) = FakeBackend::with_hydro(0x0C13);
         let mut configs = BTreeMap::new();
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
         cfg.light.mode = LightMode::Sync;
         configs.insert("usb:1b1c:0c13:1-4".to_string(), cfg);
-        crate::ambient::set(crate::Rgb { r: 250, g: 10, b: 120 });
+        crate::ambient::set(crate::Rgb {
+            r: 250,
+            g: 10,
+            b: 120,
+        });
         let m = manager(backend, configs, &[]);
         // Other tests run the engine too, so only check that a color went out.
-        wait("synced color", || dev.lock().unwrap().light.iter().any(|msg| msg.first() == Some(&0x56)));
+        wait("synced color", || {
+            dev.lock()
+                .unwrap()
+                .light
+                .iter()
+                .any(|msg| msg.first() == Some(&0x56))
+        });
         drop(m);
-        assert_eq!(sync_hex(crate::Rgb { r: 250, g: 10, b: 120 }), "#f80878");
+        assert_eq!(
+            sync_hex(crate::Rgb {
+                r: 250,
+                g: 10,
+                b: 120
+            }),
+            "#f80878"
+        );
         assert_eq!(sync_hex(crate::Rgb { r: 255, g: 3, b: 0 }), "#ff0000");
     }
 
@@ -786,7 +982,10 @@ mod tests {
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
         let id = m.views()[0].id.clone();
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
         cfg.screen.mode = ScreenMode::Temperature;
         cfg.screen.text_color = "#00ff00".into();
         m.set_config(&id, cfg.clone());
@@ -794,16 +993,27 @@ mod tests {
         let first = dev.lock().unwrap().shown_bucket;
         {
             let d = dev.lock().unwrap();
-            let green = d.bulk[20..].chunks(4).filter(|p| p[1] > 200 && p[0] < 40).count();
+            let green = d.bulk[20..]
+                .chunks(4)
+                .filter(|p| p[1] > 200 && p[0] < 40)
+                .count();
             assert!(green > 1000, "digits in the text color ({green} px)");
         }
         // A settings change redraws into the other slot.
         cfg.screen.background = vec!["#202020".into()];
         m.set_config(&id, cfg);
-        wait("other slot", || dev.lock().unwrap().shown_bucket.is_some_and(|b| Some(b) != first));
+        wait("other slot", || {
+            dev.lock()
+                .unwrap()
+                .shown_bucket
+                .is_some_and(|b| Some(b) != first)
+        });
         m.shutdown();
         let d = dev.lock().unwrap();
-        assert!(d.liquid_screen && d.shown_bucket.is_none(), "back to the built-in screen");
+        assert!(
+            d.liquid_screen && d.shown_bucket.is_none(),
+            "back to the built-in screen"
+        );
     }
 
     #[test]
@@ -812,10 +1022,15 @@ mod tests {
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
         let id = m.views()[0].id.clone();
-        let mut cfg = CoolerConfig { takeover: true, ..Default::default() };
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
         cfg.screen.mode = ScreenMode::Temperature;
         m.set_config(&id, cfg);
-        wait("first drawing", || dev.lock().unwrap().shown_bucket.is_some());
+        wait("first drawing", || {
+            dev.lock().unwrap().shown_bucket.is_some()
+        });
         let first = dev.lock().unwrap().bulk.clone();
         // Nothing changed in the settings; only the liquid warms up.
         dev.lock().unwrap().liquid_c = 41.0;
@@ -835,11 +1050,23 @@ mod tests {
         let (backend, dev) = FakeBackend::with_hydro(0x0C13);
         dev.lock().unwrap().needs_restart = true;
         let mut configs = BTreeMap::new();
-        configs.insert("usb:1b1c:0c13:1-4".to_string(), CoolerConfig { takeover: true, ..Default::default() });
+        configs.insert(
+            "usb:1b1c:0c13:1-4".to_string(),
+            CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
         let m = manager(backend, configs, &[]);
-        wait("restart notice", || m.views().first().is_some_and(|v| v.needs_restart && v.message.contains("Restart")));
+        wait("restart notice", || {
+            m.views()
+                .first()
+                .is_some_and(|v| v.needs_restart && v.message.contains("Restart"))
+        });
         assert_eq!(dev.lock().unwrap().writes, 0);
         dev.lock().unwrap().needs_restart = false;
-        wait("active after the restart", || m.views()[0].state == CoolerState::Active);
+        wait("active after the restart", || {
+            m.views()[0].state == CoolerState::Active
+        });
     }
 }

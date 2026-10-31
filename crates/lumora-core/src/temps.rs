@@ -32,7 +32,9 @@ pub fn set(source: &str, celsius: Option<f32>) {
 
 pub fn get(source: &str) -> Option<f32> {
     let r = registry().lock().unwrap_or_else(|e| e.into_inner());
-    r.get(source).filter(|(_, at)| at.elapsed() < STALE_AFTER).map(|(c, _)| *c)
+    r.get(source)
+        .filter(|(_, at)| at.elapsed() < STALE_AFTER)
+        .map(|(c, _)| *c)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -47,7 +49,10 @@ pub fn all() -> Vec<TempReading> {
     let mut v: Vec<TempReading> = r
         .iter()
         .filter(|(_, (_, at))| at.elapsed() < STALE_AFTER)
-        .map(|(s, (c, _))| TempReading { source: s.clone(), celsius: *c })
+        .map(|(s, (c, _))| TempReading {
+            source: s.clone(),
+            celsius: *c,
+        })
         .collect();
     v.sort_by(|a, b| a.source.cmp(&b.source));
     v
@@ -71,17 +76,24 @@ pub mod gpu {
 
     impl Nvml {
         pub fn open() -> Option<Nvml> {
-            let names: &[&str] = if cfg!(windows) { &["nvml.dll"] } else { &["libnvidia-ml.so.1", "libnvidia-ml.so"] };
+            let names: &[&str] = if cfg!(windows) {
+                &["nvml.dll"]
+            } else {
+                &["libnvidia-ml.so.1", "libnvidia-ml.so"]
+            };
             for name in names {
                 // SAFETY: loading the NVIDIA driver's own library; symbols are
                 // checked for presence and called with the documented types.
                 unsafe {
-                    let Ok(lib) = Library::new(name) else { continue };
+                    let Ok(lib) = Library::new(name) else {
+                        continue;
+                    };
                     let init: Symbol<Init> = lib.get(b"nvmlInit_v2\0").ok()?;
                     if init() != 0 {
                         return None;
                     }
-                    let handle: Symbol<Handle> = lib.get(b"nvmlDeviceGetHandleByIndex_v2\0").ok()?;
+                    let handle: Symbol<Handle> =
+                        lib.get(b"nvmlDeviceGetHandleByIndex_v2\0").ok()?;
                     let mut device = std::ptr::null_mut();
                     if handle(0, &mut device) != 0 {
                         return None;
@@ -151,11 +163,19 @@ pub mod cpu {
 
     fn slot() -> &'static Mutex<Status> {
         static S: OnceLock<Mutex<Status>> = OnceLock::new();
-        S.get_or_init(|| Mutex::new(Status { state: State::NeedsSetup, message: String::new() }))
+        S.get_or_init(|| {
+            Mutex::new(Status {
+                state: State::NeedsSetup,
+                message: String::new(),
+            })
+        })
     }
 
     fn set_status(state: State, message: impl Into<String>) {
-        *slot().lock().unwrap_or_else(|e| e.into_inner()) = Status { state, message: message.into() };
+        *slot().lock().unwrap_or_else(|e| e.into_inner()) = Status {
+            state,
+            message: message.into(),
+        };
     }
 
     pub fn status() -> Status {
@@ -178,7 +198,10 @@ pub mod cpu {
 
     /// Starts following the CPU temperature in the background.
     pub fn start_polling() {
-        std::thread::Builder::new().name("lumora-cpu-temp".into()).spawn(run).ok();
+        std::thread::Builder::new()
+            .name("lumora-cpu-temp".into())
+            .spawn(run)
+            .ok();
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -187,7 +210,10 @@ pub mod cpu {
         use std::net::{SocketAddr, TcpStream};
         use std::time::Duration;
         if !cfg!(windows) {
-            set_status(State::Unsupported, "CPU temperature isn't available on this system yet");
+            set_status(
+                State::Unsupported,
+                "CPU temperature isn't available on this system yet",
+            );
             return;
         }
         let addr = SocketAddr::from(([127, 0, 0, 1], PORT));
@@ -226,7 +252,10 @@ pub mod cpu {
                 }
                 None => {
                     super::set("cpu", None);
-                    set_status(State::Unsupported, "no CPU sensor found (k10temp or coretemp)");
+                    set_status(
+                        State::Unsupported,
+                        "no CPU sensor found (k10temp or coretemp)",
+                    );
                 }
             }
             std::thread::sleep(Duration::from_secs(2));
@@ -243,7 +272,11 @@ pub mod cpu {
                 continue;
             }
             // temp1 is Tctl on AMD and the package on Intel.
-            let milli: f32 = std::fs::read_to_string(dir.join("temp1_input")).ok()?.trim().parse().ok()?;
+            let milli: f32 = std::fs::read_to_string(dir.join("temp1_input"))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
             return Some(milli / 1000.0);
         }
         None
@@ -259,7 +292,10 @@ mod tests {
         assert_eq!(super::cpu::status().state, super::cpu::State::Ok);
         super::cpu::take_line("error the PawnIO driver isn't installed");
         assert_eq!(super::get("cpu"), None);
-        assert_eq!(super::cpu::status().message, "the PawnIO driver isn't installed");
+        assert_eq!(
+            super::cpu::status().message,
+            "the PawnIO driver isn't installed"
+        );
     }
 
     use super::*;

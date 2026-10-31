@@ -7,12 +7,21 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let out = args.get(1).cloned().unwrap_or_else(|| "screen.ppm".into());
     // One or two readings: "36" or "52,61".
-    let value: Vec<Option<i32>> = args.get(2).map(|v| v.split(',').map(|x| x.parse().ok()).collect()).unwrap_or_default();
+    let value: Vec<Option<i32>> = args
+        .get(2)
+        .map(|v| v.split(',').map(|x| x.parse().ok()).collect())
+        .unwrap_or_default();
     let s = ScreenSettings {
         mode: ScreenMode::Temperature,
         text_color: args.get(3).cloned().unwrap_or_else(|| "#ffffff".into()),
-        background: args.get(4).map(|b| b.split(',').map(String::from).collect()).unwrap_or_else(|| vec!["#000000".into()]),
-        readings: args.get(5).map(|r| r.split(',').map(String::from).collect()).unwrap_or_else(|| vec!["liquid".into()]),
+        background: args
+            .get(4)
+            .map(|b| b.split(',').map(String::from).collect())
+            .unwrap_or_else(|| vec!["#000000".into()]),
+        readings: args
+            .get(5)
+            .map(|r| r.split(',').map(String::from).collect())
+            .unwrap_or_else(|| vec!["liquid".into()]),
         ..Default::default()
     };
     let size = 640;

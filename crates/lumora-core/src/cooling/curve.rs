@@ -32,7 +32,9 @@ pub enum SpeedSetting {
 
 impl Default for SpeedSetting {
     fn default() -> Self {
-        SpeedSetting::Preset { preset: Preset::Balanced }
+        SpeedSetting::Preset {
+            preset: Preset::Balanced,
+        }
     }
 }
 
@@ -85,7 +87,9 @@ pub fn normalize(points: &[(u8, u8)]) -> Curve {
 
 /// Duty at `temp` by straight lines between points (flat beyond the ends).
 pub fn interpolate(points: &[(u8, u8)], temp: u8) -> u8 {
-    let (Some(first), Some(last)) = (points.first(), points.last()) else { return 100 };
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return 100;
+    };
     if temp <= first.0 {
         return first.1;
     }
@@ -123,7 +127,10 @@ mod tests {
         let n = normalize(&[(30, 40), (25, 25), (35, 30), (40, 35), (40, 80)]);
         assert_eq!(n, vec![(25, 25), (30, 40), (35, 40), (40, 80), (59, 100)]);
         // Stops at the first 100 %.
-        assert_eq!(normalize(&[(30, 40), (35, 100), (40, 100)]), vec![(30, 40), (35, 100)]);
+        assert_eq!(
+            normalize(&[(30, 40), (35, 100), (40, 100)]),
+            vec![(30, 40), (35, 100)]
+        );
         assert_eq!(normalize(&[]), vec![(59, 100)]);
     }
 
@@ -153,9 +160,21 @@ mod tests {
 
     #[test]
     fn settings_round_trip_as_json() {
-        let s: SpeedSetting = serde_json::from_str(r#"{"mode":"custom","points":[[20,30],[40,70]]}"#).unwrap();
-        assert_eq!(s, SpeedSetting::Custom { points: vec![(20, 30), (40, 70)] });
-        let s: SpeedSetting = serde_json::from_str(r#"{"mode":"preset","preset":"silent"}"#).unwrap();
-        assert_eq!(s, SpeedSetting::Preset { preset: Preset::Silent });
+        let s: SpeedSetting =
+            serde_json::from_str(r#"{"mode":"custom","points":[[20,30],[40,70]]}"#).unwrap();
+        assert_eq!(
+            s,
+            SpeedSetting::Custom {
+                points: vec![(20, 30), (40, 70)]
+            }
+        );
+        let s: SpeedSetting =
+            serde_json::from_str(r#"{"mode":"preset","preset":"silent"}"#).unwrap();
+        assert_eq!(
+            s,
+            SpeedSetting::Preset {
+                preset: Preset::Silent
+            }
+        );
     }
 }

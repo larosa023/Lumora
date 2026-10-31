@@ -39,14 +39,20 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
     };
-    use windows_sys::Win32::System::Services::{CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS};
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS,
+    };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject, INFINITE,
-        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+        WaitForSingleObject, INFINITE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_TERMINATE,
     };
-    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
 
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
         s.encode_wide().chain(std::iter::once(0)).collect()
@@ -54,7 +60,9 @@ mod imp {
 
     fn from_wide(buf: &[u16]) -> String {
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        OsString::from_wide(&buf[..end]).to_string_lossy().into_owned()
+        OsString::from_wide(&buf[..end])
+            .to_string_lossy()
+            .into_owned()
     }
 
     struct Handle(HANDLE);
@@ -79,7 +87,10 @@ mod imp {
                 return out;
             }
             loop {
-                out.push(Process { pid: entry.th32ProcessID, name: from_wide(&entry.szExeFile).to_lowercase() });
+                out.push(Process {
+                    pid: entry.th32ProcessID,
+                    name: from_wide(&entry.szExeFile).to_lowercase(),
+                });
                 if Process32NextW(snap, &mut entry) == 0 {
                     break;
                 }
@@ -117,25 +128,41 @@ mod imp {
 
     /// A registry value as text (REG_SZ, or REG_MULTI_SZ joined by commas).
     fn reg_text(key: &str, value: &str) -> Option<String> {
-        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ};
+        use windows_sys::Win32::System::Registry::{
+            RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ,
+        };
         let k = wide(std::ffi::OsStr::new(key));
         let v = wide(std::ffi::OsStr::new(value));
         let mut buf = vec![0u16; 2048];
         let mut len = (buf.len() * 2) as u32;
         let r = unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                k.as_ptr(),
+                v.as_ptr(),
+                RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
         };
         if r != 0 {
             return None;
         }
         let words = &buf[..(len as usize / 2).min(buf.len())];
-        let text: Vec<String> = words.split(|&c| c == 0).filter(|s| !s.is_empty()).map(|s| OsString::from_wide(s).to_string_lossy().into_owned()).collect();
+        let text: Vec<String> = words
+            .split(|&c| c == 0)
+            .filter(|s| !s.is_empty())
+            .map(|s| OsString::from_wide(s).to_string_lossy().into_owned())
+            .collect();
         Some(text.join(","))
     }
 
     /// Subkey names under an HKLM key.
     fn reg_subkeys(key: &str) -> Vec<String> {
-        use windows_sys::Win32::System::Registry::{RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ};
+        use windows_sys::Win32::System::Registry::{
+            RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ,
+        };
         let k = wide(std::ffi::OsStr::new(key));
         let mut out = Vec::new();
         unsafe {
@@ -146,10 +173,24 @@ mod imp {
             for i in 0..64u32 {
                 let mut name = [0u16; 256];
                 let mut len = name.len() as u32;
-                if RegEnumKeyExW(h, i, name.as_mut_ptr(), &mut len, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) != 0 {
+                if RegEnumKeyExW(
+                    h,
+                    i,
+                    name.as_mut_ptr(),
+                    &mut len,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                ) != 0
+                {
                     break;
                 }
-                out.push(OsString::from_wide(&name[..len as usize]).to_string_lossy().into_owned());
+                out.push(
+                    OsString::from_wide(&name[..len as usize])
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
             RegCloseKey(h);
         }
@@ -163,17 +204,28 @@ mod imp {
             .map(|inst| {
                 let key = format!(r"{base}\{inst}");
                 let get = |v: &str| reg_text(&key, v).unwrap_or_else(|| "-".into());
-                format!("{inst}: driver {} | class {} | {} | filters {}", get("Service"), get("Class"), get("DeviceDesc"), get("UpperFilters"))
+                format!(
+                    "{inst}: driver {} | class {} | {} | filters {}",
+                    get("Service"),
+                    get("Class"),
+                    get("DeviceDesc"),
+                    get("UpperFilters")
+                )
             })
             .collect()
     }
 
     pub fn usb_class_filters() -> Option<String> {
-        reg_text(r"SYSTEM\CurrentControlSet\Control\Class\{36FC9E60-C465-11CF-8056-444553540000}", "UpperFilters")
+        reg_text(
+            r"SYSTEM\CurrentControlSet\Control\Class\{36FC9E60-C465-11CF-8056-444553540000}",
+            "UpperFilters",
+        )
     }
 
     pub fn service_state(name: &str) -> Option<super::ServiceState> {
-        use windows_sys::Win32::System::Services::{QueryServiceStatus, SERVICE_RUNNING, SERVICE_STATUS};
+        use windows_sys::Win32::System::Services::{
+            QueryServiceStatus, SERVICE_RUNNING, SERVICE_STATUS,
+        };
         unsafe {
             let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
             if scm.is_null() {
@@ -185,7 +237,10 @@ mod imp {
             if !svc.is_null() {
                 let mut st: SERVICE_STATUS = std::mem::zeroed();
                 if QueryServiceStatus(svc, &mut st) != 0 {
-                    out = Some(super::ServiceState { running: st.dwCurrentState == SERVICE_RUNNING, exit_code: st.dwWin32ExitCode });
+                    out = Some(super::ServiceState {
+                        running: st.dwCurrentState == SERVICE_RUNNING,
+                        exit_code: st.dwWin32ExitCode,
+                    });
                 }
                 CloseServiceHandle(svc);
             }
@@ -225,7 +280,11 @@ mod imp {
             info.nShow = 0; // SW_HIDE: the helper has no window anyway
             if ShellExecuteExW(&mut info) == 0 {
                 let err = GetLastError();
-                return Err(if err == 1223 { super::ElevateError::Declined } else { super::ElevateError::Failed(err) });
+                return Err(if err == 1223 {
+                    super::ElevateError::Declined
+                } else {
+                    super::ElevateError::Failed(err)
+                });
             }
             if info.hProcess.is_null() {
                 return Err(super::ElevateError::Failed(0));
@@ -248,9 +307,14 @@ mod imp {
         let mut out = Vec::new();
         if let Ok(dir) = std::fs::read_dir("/proc") {
             for e in dir.flatten() {
-                let Some(pid) = e.file_name().to_str().and_then(|s| s.parse().ok()) else { continue };
+                let Some(pid) = e.file_name().to_str().and_then(|s| s.parse().ok()) else {
+                    continue;
+                };
                 if let Ok(name) = std::fs::read_to_string(e.path().join("comm")) {
-                    out.push(Process { pid, name: name.trim().to_lowercase() });
+                    out.push(Process {
+                        pid,
+                        name: name.trim().to_lowercase(),
+                    });
                 }
             }
         }
