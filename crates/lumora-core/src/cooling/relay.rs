@@ -161,7 +161,16 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
 
 /// Runs the relay on `127.0.0.1:6745`.
 pub fn run(backend: Box<dyn Backend>, key_file: PathBuf) {
-    let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) else {
+    run_on(PORT, backend, key_file)
+}
+
+/// Where Lumora's 32-bit companion relays USBXpress coolers.
+pub const USBXPRESS_PORT: u16 = 6746;
+
+/// Runs a relay on `127.0.0.1:<port>`; returns at once if the port is taken
+/// (another copy already serves it).
+pub fn run_on(port: u16, backend: Box<dyn Backend>, key_file: PathBuf) {
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) else {
         return;
     };
     let shared = Arc::new(Mutex::new(backend));

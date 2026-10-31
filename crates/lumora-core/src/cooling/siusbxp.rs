@@ -66,7 +66,8 @@ fn err(what: &str, c: u8) -> io::Error {
 /// Folders iCUE (and the driver package) put `SiUSBXp.dll` in.
 fn candidates() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+    // ProgramW6432 is the real Program Files even in a 32-bit process.
+    for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
         if let Some(p) = std::env::var_os(var) {
             roots.push(PathBuf::from(p).join("Corsair"));
         }
@@ -107,6 +108,28 @@ fn candidates() -> Vec<PathBuf> {
     out
 }
 
+/// Whether a DLL is 32- or 64-bit, from its PE header.
+pub fn pe_bits(path: &Path) -> Option<u32> {
+    let data = std::fs::read(path).ok()?;
+    let at = u32::from_le_bytes(data.get(0x3C..0x40)?.try_into().ok()?) as usize;
+    if data.get(at..at + 4)? != b"PE\0\0" {
+        return None;
+    }
+    match u16::from_le_bytes(data.get(at + 4..at + 6)?.try_into().ok()?) {
+        0x014C => Some(32),
+        0x8664 | 0xAA64 => Some(64),
+        _ => None,
+    }
+}
+
+/// A `SiUSBXp.dll` is on the PC but only in the other bitness (iCUE's is
+/// 32-bit): Lumora's 32-bit companion has to load it.
+pub fn needs_companion() -> bool {
+    let mine = usize::BITS;
+    let found: Vec<u32> = candidates().iter().filter(|p| p.is_file()).filter_map(|p| pe_bits(p)).collect();
+    !found.is_empty() && !found.contains(&mine)
+}
+
 /// The USBXpress library, loaded once (`Err` says why not).
 pub fn api() -> Result<&'static Api, String> {
     static API: OnceLock<Result<Api, String>> = OnceLock::new();
@@ -115,6 +138,13 @@ pub fn api() -> Result<&'static Api, String> {
         for path in candidates() {
             if !path.is_file() {
                 continue;
+            }
+            // A process can only load a DLL of its own bitness.
+            if let Some(bits) = pe_bits(&path) {
+                if bits != usize::BITS {
+                    tried.push(format!("{} is {bits}-bit", path.display()));
+                    continue;
+                }
             }
             // SAFETY: loading Silicon Labs' USBXpress library that iCUE
             // installed; its functions are called with their published types.
@@ -309,5 +339,42 @@ pub fn diagnose() -> String {
                 }
             ),
         },
+    }
+}
+
+/// The coolers USBXpress can reach, as a cooling backend. Lumora's 32-bit
+/// companion runs this behind a relay (iCUE's `SiUSBXp.dll` is 32-bit).
+pub struct UsbXpressBackend;
+
+impl super::Backend for UsbXpressBackend {
+    fn discover(&mut self) -> Vec<super::FoundCooler> {
+        let Ok(api) = api() else { return Vec::new() };
+        let Ok(devs) = api.devices() else { return Vec::new() };
+        let mut seen: std::collections::HashMap<u16, usize> = Default::default();
+        devs.into_iter()
+            .filter(|(_, v, p)| *v == super::hydro::CORSAIR_VID && super::hydro::model(*p).is_some())
+            .map(|(_, v, p)| {
+                let n = seen.entry(p).or_insert(0);
+                let id = format!("usb:{v:04x}:{p:04x}:{n}");
+                *n += 1;
+                super::relay::found(&id, v, p)
+            })
+            .collect()
+    }
+
+    fn open(&mut self, cooler: &super::FoundCooler) -> io::Result<Box<dyn Link>> {
+        let api = api().map_err(io::Error::other)?;
+        let n: usize = cooler.id.rsplit(':').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let devs = api.devices()?;
+        let (index, _, _) = devs
+            .into_iter()
+            .filter(|(_, v, p)| *v == cooler.vid && *p == cooler.pid)
+            .nth(n)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler isn't listed by USBXpress"))?;
+        Ok(Box::new(api.open(index)?))
+    }
+
+    fn diagnose(&mut self) -> String {
+        diagnose()
     }
 }

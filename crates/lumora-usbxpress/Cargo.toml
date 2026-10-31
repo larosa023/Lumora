@@ -1,0 +1,13 @@
+[package]
+name = "lumora-usbxpress"
+description = "Lumora's 32-bit companion for Corsair coolers on iCUE's USBXpress driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lumora-usbxpress"
+path = "src/main.rs"
+
+[dependencies]
+lumora-core = { path = "../lumora-core" }

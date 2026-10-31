@@ -380,6 +380,8 @@ async fn diagnostic_report(app: State<'_, App>, host: State<'_, Arc<EngineHost>>
         if cfg!(windows) {
             if let Ok(key) = std::fs::read_to_string(app.store.dir().join("relay.key")) {
                 let _ = writeln!(r, "{}", lumora_core::cooling::relay::diagnose(lumora_core::cooling::relay::PORT, key.trim()));
+                let companion = lumora_core::cooling::relay::diagnose(lumora_core::cooling::relay::USBXPRESS_PORT, key.trim());
+                let _ = writeln!(r, "{}", companion.replacen("helper relay", "USBXpress companion", 1));
             }
         }
         if cooling.is_empty() {
@@ -678,7 +680,17 @@ pub fn run() {
                 }
                 Err(_) => Box::new(lumora_core::cooling::MultiBackend::new(vec![
                     Box::new(lumora_core::cooling::hid::HidBackend::new()),
-                    Box::new(lumora_core::cooling::usb::UsbBackend::new(relay_key.clone())),
+                    Box::new(
+                        lumora_core::cooling::usb::UsbBackend::new(relay_key.clone()).with_companion(
+                            lumora_core::cooling::usb::Companion::new(
+                                app.path()
+                                    .resource_dir()
+                                    .map(|d| d.join("engine").join("usbxpress").join("lumora-usbxpress.exe"))
+                                    .unwrap_or_default(),
+                                app.path().app_config_dir().map(|d| d.join("relay.key")).unwrap_or_default(),
+                            ),
+                        ),
+                    ),
                 ])),
             };
             let cooling = CoolingManager::new(

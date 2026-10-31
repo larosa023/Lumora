@@ -39,6 +39,8 @@ jobs:
         run: cargo build -p lumora
       - name: CPU temperature helper builds
         run: cargo build -p lumora-sensors && cargo test -p lumora-sensors
+      - name: USBXpress companion builds (32-bit)
+        run: rustup target add i686-pc-windows-msvc && cargo build -p lumora-usbxpress --target i686-pc-windows-msvc
       - name: Windows unit tests
         run: cargo test -p lumora
 

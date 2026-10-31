@@ -21,7 +21,7 @@ pub mod kraken;
 pub mod manager;
 pub mod relay;
 pub mod screen;
-#[cfg(all(windows, feature = "usb"))]
+#[cfg(windows)]
 pub mod siusbxp;
 #[cfg(feature = "usb")]
 pub mod usb;

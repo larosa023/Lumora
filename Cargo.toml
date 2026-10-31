@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/lumora-core", "crates/lumora-sensors", "src-tauri"]
+members = ["crates/lumora-core", "crates/lumora-sensors", "crates/lumora-usbxpress", "src-tauri"]
 
 [workspace.package]
-version = "0.7.3"
+version = "0.7.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/larosa023/lumora"

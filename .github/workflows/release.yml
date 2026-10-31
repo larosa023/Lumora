@@ -66,6 +66,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path src-tauri/engine/sensors | Out-Null
           Copy-Item target/release/lumora-sensors.exe src-tauri/engine/sensors/
 
+      - name: USBXpress companion (Windows, 32-bit)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cargo build --release -p lumora-usbxpress --target i686-pc-windows-msvc
+          New-Item -ItemType Directory -Force -Path src-tauri/engine/usbxpress | Out-Null
+          Copy-Item target/i686-pc-windows-msvc/release/lumora-usbxpress.exe src-tauri/engine/usbxpress/
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

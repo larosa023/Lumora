@@ -37,12 +37,73 @@ pub struct UsbBackend {
     routes: std::collections::HashMap<String, Route>,
     /// Results of the one-time direct-open check, by cooler.
     plain: std::collections::HashMap<String, Result<(), String>>,
+    /// Lumora's 32-bit companion, which loads iCUE's 32-bit `SiUSBXp.dll`
+    /// and relays the cooler on [`super::relay::USBXPRESS_PORT`].
+    companion: Option<Companion>,
+}
+
+/// Where the companion is and how it signs Lumora in.
+pub struct Companion {
+    pub exe: std::path::PathBuf,
+    pub key_file: std::path::PathBuf,
+    child: Option<std::process::Child>,
+}
+
+impl Companion {
+    pub fn new(exe: std::path::PathBuf, key_file: std::path::PathBuf) -> Self {
+        Companion { exe, key_file, child: None }
+    }
+
+    /// Starts the companion if it isn't serving (or is from another version).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn ensure(&mut self, key: &str) -> io::Result<Vec<String>> {
+        use super::relay::{reachable, USBXPRESS_PORT};
+        match reachable(USBXPRESS_PORT, key) {
+            Ok(ids) => return Ok(ids),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                // An old copy (left from an earlier version): replace it.
+                for p in crate::system::processes() {
+                    if p.name == "lumora-usbxpress.exe" {
+                        crate::system::kill(p.pid);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            Err(_) => {}
+        }
+        let running = self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+        if !running {
+            if !self.exe.is_file() {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "the USBXpress companion is missing from this copy of Lumora"));
+            }
+            let mut cmd = std::process::Command::new(&self.exe);
+            cmd.arg("--key-file").arg(&self.key_file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000); // no console window
+            }
+            self.child = Some(cmd.spawn()?);
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        reachable(USBXPRESS_PORT, key)
+    }
+}
+
+impl Drop for Companion {
+    fn drop(&mut self) {
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.kill();
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Route {
     Direct,
-    Relay,
+    /// A relay: the admin helper (UsbDk) or the 32-bit companion (USBXpress),
+    /// by port.
+    Relay(u16),
     /// Windows' own USB stack, when the cooler's driver is one libusb can
     /// use directly (WinUSB-based): no UsbDk, no admin rights needed.
     Plain,
@@ -179,7 +240,14 @@ impl UsbBackend {
             relay_key,
             routes: Default::default(),
             plain: Default::default(),
+            companion: None,
         }
+    }
+
+    /// Lets this backend start Lumora's 32-bit USBXpress companion.
+    pub fn with_companion(mut self, companion: Companion) -> Self {
+        self.companion = Some(companion);
+        self
     }
 }
 
@@ -379,7 +447,7 @@ impl Backend for UsbBackend {
             .map(|k| super::relay::reachable(super::relay::PORT, k));
         if let Some(Ok(ids)) = &relay {
             for id in ids {
-                self.routes.entry(id.clone()).or_insert(Route::Relay);
+                self.routes.entry(id.clone()).or_insert(Route::Relay(super::relay::PORT));
             }
         }
         // Windows-only: a cooler whose driver libusb can use directly needs
@@ -400,6 +468,24 @@ impl Backend for UsbBackend {
             }
         }
         // Corsair's own USBXpress driver (how iCUE installs these coolers).
+        // iCUE's SiUSBXp.dll is 32-bit: then the 32-bit companion loads it.
+        #[cfg(windows)]
+        {
+            let plugged_unreached = Context::new()
+                .ok()
+                .map(|ctx| list(&ctx).into_iter().any(|(id, _, _)| !self.routes.contains_key(&id)))
+                .unwrap_or(false);
+            let key = self.relay_key.clone();
+            if let (Some(c), Some(key)) = (self.companion.as_mut(), key) {
+                if plugged_unreached && super::siusbxp::needs_companion() {
+                    if let Ok(ids) = c.ensure(&key) {
+                        for id in ids {
+                            self.routes.entry(id).or_insert(Route::Relay(super::relay::USBXPRESS_PORT));
+                        }
+                    }
+                }
+            }
+        }
         #[cfg(windows)]
         {
             if let Ok(api) = super::siusbxp::api() {
@@ -488,9 +574,10 @@ impl Backend for UsbBackend {
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
         match self.routes.get(&cooler.id) {
-            Some(Route::Relay) => {
+            Some(Route::Relay(port)) => {
+                let port = *port;
                 let key = self.relay_key.as_deref().unwrap_or_default();
-                return super::relay::Client::connect(super::relay::PORT, key)?.open(&cooler.id);
+                return super::relay::Client::connect(port, key)?.open(&cooler.id);
             }
             Some(Route::Plain) => {
                 let ctx = Context::new().map_err(io_err)?;
