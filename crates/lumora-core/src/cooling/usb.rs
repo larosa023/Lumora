@@ -35,12 +35,43 @@ pub struct UsbBackend {
     relay_key: Option<String>,
     /// How each reachable cooler was reached in the last look.
     routes: std::collections::HashMap<String, Route>,
+    /// Results of the one-time direct-open check, by cooler.
+    plain: std::collections::HashMap<String, Result<(), String>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Route {
     Direct,
     Relay,
+    /// Windows' own USB stack, when the cooler's driver is one libusb can
+    /// use directly (WinUSB-based): no UsbDk, no admin rights needed.
+    Plain,
+}
+
+/// Opens a cooler through `ctx` and readies it to talk.
+fn open_with(ctx: &Context, id: &str) -> io::Result<UsbLink> {
+    let dev = list(ctx)
+        .into_iter()
+        .find(|(i, _, _)| i == id)
+        .map(|(_, _, d)| d)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler isn't reachable yet"))?;
+    let handle = dev.open().map_err(io_err)?;
+    let _ = handle.set_auto_detach_kernel_driver(true);
+    if handle.claim_interface(0).is_err() {
+        let _ = handle.set_active_configuration(1);
+        handle.claim_interface(0).map_err(io_err)?;
+    }
+    handle
+        .write_control(REQUEST_TYPE_VENDOR_OUT, USBXPRESS_REQUEST, USBXPRESS_CLEAR_TO_SEND, 0, &[], TIMEOUT)
+        .map_err(io_err)?;
+    Ok(UsbLink(handle))
+}
+
+/// Whether the cooler opens through Windows' own USB stack (checked once
+/// per cooler per run: opening briefly takes it from its app).
+fn plain_probe(id: &str) -> Result<(), String> {
+    let ctx = Context::new().map_err(|e| e.to_string())?;
+    open_with(&ctx, id).map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn io_err(e: rusb::Error) -> io::Error {
@@ -122,7 +153,7 @@ fn list(ctx: &Context) -> Vec<(String, u16, Device<Context>)> {
 impl UsbBackend {
     /// `relay_key`: see [`super::relay`]; pass `None` in the admin helper.
     pub fn new(relay_key: Option<String>) -> Self {
-        UsbBackend { access: access_context(), relay_key, routes: Default::default() }
+        UsbBackend { access: access_context(), relay_key, routes: Default::default(), plain: Default::default() }
     }
 }
 
@@ -141,11 +172,12 @@ pub fn report() -> String {
     };
     let access = seen(access_context());
     let plain = if cfg!(windows) { seen(Context::new().ok()) } else { "same as above".into() };
+    let windows = diagnose_windows();
     let service = match crate::system::service_state("UsbDk") {
         None => "not installed".to_string(),
         Some(st) => format!("{} (exit code {})", if st.running { "running" } else { "stopped" }, st.exit_code),
     };
-    format!("USB access (UsbDk on Windows): {access}\nUSB listing (Windows' own): {plain}\nUsbDk driver: {service}")
+    format!("USB access (UsbDk on Windows): {access}\nUSB listing (Windows' own): {plain}\nUsbDk driver: {service}\n{windows}")
 }
 
 impl Default for UsbBackend {
@@ -203,10 +235,11 @@ pub fn diagnose_access() -> String {
         Err(e) => out.push(format!("device list failed: {e}")),
         Ok(list) => {
             out.push(format!("devices listed: {}", list.len()));
+            let few = list.len() < 12;
             for d in list.iter() {
                 if let Ok(desc) = d.device_descriptor() {
-                    if desc.vendor_id() == CORSAIR_VID {
-                        out.push(format!("corsair {:04x}:{:04x} bus {} port {}", desc.vendor_id(), desc.product_id(), d.bus_number(), d.port_number()));
+                    if few || desc.vendor_id() == CORSAIR_VID {
+                        out.push(format!("device {:04x}:{:04x} class {:02x} bus {} port {}", desc.vendor_id(), desc.product_id(), desc.class_code(), d.bus_number(), d.port_number()));
                     }
                 }
             }
@@ -226,6 +259,24 @@ pub fn diagnose_access() -> String {
     if let Ok(l) = log.lock() {
         for m in l.iter().filter(|m| !m.is_empty()) {
             out.push(format!("libusb: {m}"));
+        }
+    }
+    out.join("\n")
+}
+
+/// The cooler's Windows driver, UsbDk's place on the USB hubs, and whether
+/// the cooler opens without UsbDk: for the troubleshooting report.
+pub fn diagnose_windows() -> String {
+    let mut out = Vec::new();
+    for m in hydro::MODELS {
+        for line in crate::system::usb_driver_info(CORSAIR_VID, m.pid) {
+            out.push(format!("{} driver: {line}", m.name));
+        }
+    }
+    out.push(format!("USB hub filters: {}", crate::system::usb_class_filters().unwrap_or_else(|| "none".into())));
+    if let Ok(ctx) = Context::new() {
+        for (id, _, _) in list(&ctx) {
+            out.push(format!("open {id} without UsbDk: {}", plain_probe(&id).map(|_| "ok".to_string()).unwrap_or_else(|e| e)));
         }
     }
     out.join("\n")
@@ -251,6 +302,19 @@ impl Backend for UsbBackend {
         if let Some(Ok(ids)) = &relay {
             for id in ids {
                 self.routes.entry(id.clone()).or_insert(Route::Relay);
+            }
+        }
+        // Windows-only: a cooler whose driver libusb can use directly needs
+        // neither UsbDk nor the helper. Tried once per cooler.
+        if cfg!(windows) {
+            for (id, _, _) in Context::new().ok().map(|c| list(&c)).unwrap_or_default() {
+                if self.routes.contains_key(&id) {
+                    continue;
+                }
+                let ok = self.plain.entry(id.clone()).or_insert_with(|| plain_probe(&id)).is_ok();
+                if ok {
+                    self.routes.insert(id, Route::Plain);
+                }
             }
         }
         let helper_up = matches!(relay, Some(Ok(_)));
@@ -300,26 +364,19 @@ impl Backend for UsbBackend {
     }
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
-        if self.routes.get(&cooler.id) == Some(&Route::Relay) {
-            let key = self.relay_key.as_deref().unwrap_or_default();
-            return super::relay::Client::connect(super::relay::PORT, key)?.open(&cooler.id);
+        match self.routes.get(&cooler.id) {
+            Some(Route::Relay) => {
+                let key = self.relay_key.as_deref().unwrap_or_default();
+                return super::relay::Client::connect(super::relay::PORT, key)?.open(&cooler.id);
+            }
+            Some(Route::Plain) => {
+                let ctx = Context::new().map_err(io_err)?;
+                return Ok(Box::new(open_with(&ctx, &cooler.id)?));
+            }
+            _ => {}
         }
         let ctx = self.access.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "the USB access driver isn't set up"))?;
-        let dev = list(ctx)
-            .into_iter()
-            .find(|(id, _, _)| *id == cooler.id)
-            .map(|(_, _, d)| d)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler isn't reachable yet"))?;
-        let handle = dev.open().map_err(io_err)?;
-        let _ = handle.set_auto_detach_kernel_driver(true);
-        if handle.claim_interface(0).is_err() {
-            let _ = handle.set_active_configuration(1);
-            handle.claim_interface(0).map_err(io_err)?;
-        }
-        handle
-            .write_control(REQUEST_TYPE_VENDOR_OUT, USBXPRESS_REQUEST, USBXPRESS_CLEAR_TO_SEND, 0, &[], TIMEOUT)
-            .map_err(io_err)?;
-        Ok(Box::new(UsbLink(handle)))
+        Ok(Box::new(open_with(ctx, &cooler.id)?))
     }
 }
 

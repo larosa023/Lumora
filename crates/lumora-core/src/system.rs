@@ -115,6 +115,63 @@ mod imp {
         }
     }
 
+    /// A registry value as text (REG_SZ, or REG_MULTI_SZ joined by commas).
+    fn reg_text(key: &str, value: &str) -> Option<String> {
+        use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_MULTI_SZ, RRF_RT_REG_SZ};
+        let k = wide(std::ffi::OsStr::new(key));
+        let v = wide(std::ffi::OsStr::new(value));
+        let mut buf = vec![0u16; 2048];
+        let mut len = (buf.len() * 2) as u32;
+        let r = unsafe {
+            RegGetValueW(HKEY_LOCAL_MACHINE, k.as_ptr(), v.as_ptr(), RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+        };
+        if r != 0 {
+            return None;
+        }
+        let words = &buf[..(len as usize / 2).min(buf.len())];
+        let text: Vec<String> = words.split(|&c| c == 0).filter(|s| !s.is_empty()).map(|s| OsString::from_wide(s).to_string_lossy().into_owned()).collect();
+        Some(text.join(","))
+    }
+
+    /// Subkey names under an HKLM key.
+    fn reg_subkeys(key: &str) -> Vec<String> {
+        use windows_sys::Win32::System::Registry::{RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ};
+        let k = wide(std::ffi::OsStr::new(key));
+        let mut out = Vec::new();
+        unsafe {
+            let mut h: HKEY = std::ptr::null_mut();
+            if RegOpenKeyExW(HKEY_LOCAL_MACHINE, k.as_ptr(), 0, KEY_READ, &mut h) != 0 {
+                return out;
+            }
+            for i in 0..64u32 {
+                let mut name = [0u16; 256];
+                let mut len = name.len() as u32;
+                if RegEnumKeyExW(h, i, name.as_mut_ptr(), &mut len, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) != 0 {
+                    break;
+                }
+                out.push(OsString::from_wide(&name[..len as usize]).to_string_lossy().into_owned());
+            }
+            RegCloseKey(h);
+        }
+        out
+    }
+
+    pub fn usb_driver_info(vid: u16, pid: u16) -> Vec<String> {
+        let base = format!(r"SYSTEM\CurrentControlSet\Enum\USB\VID_{vid:04X}&PID_{pid:04X}");
+        reg_subkeys(&base)
+            .into_iter()
+            .map(|inst| {
+                let key = format!(r"{base}\{inst}");
+                let get = |v: &str| reg_text(&key, v).unwrap_or_else(|| "-".into());
+                format!("{inst}: driver {} | class {} | {} | filters {}", get("Service"), get("Class"), get("DeviceDesc"), get("UpperFilters"))
+            })
+            .collect()
+    }
+
+    pub fn usb_class_filters() -> Option<String> {
+        reg_text(r"SYSTEM\CurrentControlSet\Control\Class\{36FC9E60-C465-11CF-8056-444553540000}", "UpperFilters")
+    }
+
     pub fn service_state(name: &str) -> Option<super::ServiceState> {
         use windows_sys::Win32::System::Services::{QueryServiceStatus, SERVICE_RUNNING, SERVICE_STATUS};
         unsafe {
@@ -216,6 +273,14 @@ mod imp {
         None
     }
 
+    pub fn usb_driver_info(_vid: u16, _pid: u16) -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn usb_class_filters() -> Option<String> {
+        None
+    }
+
     pub fn run_as_admin(_exe: &Path, _args: &str) -> Result<u32, super::ElevateError> {
         Err(super::ElevateError::Failed(0))
     }
@@ -242,6 +307,17 @@ pub fn process_path(pid: u32) -> Option<PathBuf> {
 /// Ends a process. Returns whether it worked.
 pub fn kill(pid: u32) -> bool {
     imp::kill(pid)
+}
+
+/// For each plugged-in instance of a USB device: its Windows driver, class
+/// and filters (from the registry), for the troubleshooting report.
+pub fn usb_driver_info(vid: u16, pid: u16) -> Vec<String> {
+    imp::usb_driver_info(vid, pid)
+}
+
+/// Filters Windows adds to every USB hub and controller (UsbDk belongs here).
+pub fn usb_class_filters() -> Option<String> {
+    imp::usb_class_filters()
 }
 
 /// A service's state, or `None` when it isn't installed.
