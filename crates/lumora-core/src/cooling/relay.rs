@@ -11,6 +11,8 @@
 //! → open <id>           ← ok | err <why>
 //! → write <hex>         ← ok | err <why>
 //! → read <ms>           ← ok [<hex>] | err <why>     (no hex: timed out)
+//! → diag                ← ok <details, " ¦ " between lines>
+//! → version             ← ok <Lumora version>
 //! ```
 //!
 //! The key is a random value Lumora writes into its own settings folder (the
@@ -91,10 +93,14 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
             }
         } else {
             match cmd {
+                // Lumora checks this to know when the helper needs updating.
+                "version" => format!("ok {}", env!("CARGO_PKG_VERSION")),
                 "list" => {
                     let ids: Vec<String> = lock().discover().into_iter().filter(|f| !f.needs_setup && !f.needs_restart).map(|f| f.id).collect();
                     format!("ok {}", ids.join(" ")).trim_end().to_string()
                 }
+                // Details for the troubleshooting report, on one line.
+                "diag" => format!("ok {}", lock().diagnose().replace('\n', " ¦ ")),
                 "open" => {
                     link = None;
                     let mut b = lock();
@@ -206,9 +212,27 @@ impl Link for Client {
     }
 }
 
-/// What a helper relay offers, for a backend on the Lumora side.
+/// What the helper sees, for the troubleshooting report.
+pub fn diagnose(port: u16, key: &str) -> String {
+    match Client::connect(port, key) {
+        Err(e) => format!("helper relay: not reachable ({e})"),
+        Ok(mut c) => match c.ask("diag") {
+            Ok(text) => format!("helper relay: connected\n  {}", text.replace(" ¦ ", "\n  ")),
+            Err(e) => format!("helper relay: connected, but it couldn't diagnose ({e}). It may be an older helper: run the cooler setup again."),
+        },
+    }
+}
+
+/// What a helper relay offers, for a backend on the Lumora side. A helper
+/// from another Lumora version counts as out of date
+/// (`ErrorKind::InvalidData`): the setup installs the matching one.
 pub fn reachable(port: u16, key: &str) -> io::Result<Vec<String>> {
-    Client::connect(port, key)?.list()
+    let mut c = Client::connect(port, key)?;
+    match c.ask("version") {
+        Ok(v) if v == env!("CARGO_PKG_VERSION") => c.list(),
+        Ok(v) => Err(io::Error::new(io::ErrorKind::InvalidData, format!("the helper is version {v}"))),
+        Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "the helper is from an older Lumora")),
+    }
 }
 
 /// Turns relay ids into coolers (for tests and simple backends).

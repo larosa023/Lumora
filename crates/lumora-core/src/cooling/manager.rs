@@ -296,7 +296,7 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     let now = Instant::now();
     if r.found.needs_setup {
         r.state = CoolerState::NeedsSetup;
-        r.message = "Lumora needs a one-time setup before it can reach this cooler.".into();
+        r.message = r.found.problem.clone().unwrap_or_else(|| "Lumora needs a one-time setup before it can reach this cooler.".into());
         return;
     }
     if r.found.needs_restart {

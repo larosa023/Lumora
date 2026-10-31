@@ -477,6 +477,13 @@ function lightHtml(c) {
 
 function setupHtml(c) {
   const app = c.owner_app || 'its own app';
+  if (/older version/.test(c.message || '')) {
+    return `<div class="cool-page"><div class="hands-off static">
+      <strong>Update Lumora's helper</strong>
+      <span>${ctx.esc(c.message)}</span>
+      <button class="btn primary" data-takeover="on">Update the helper</button>
+    </div></div>`;
+  }
   return `<div class="cool-page"><div class="hands-off static">
     <strong>One-time setup needed</strong>
     <span>Lumora needs two small pieces to reach this cooler: the UsbDk access driver and Lumora's helper, which uses it with admin rights (UsbDk only answers admin programs). One Windows permission prompt installs both. Neither replaces the cooler's own driver, so ${ctx.esc(app)} still works whenever Lumora isn't running it.</span>
@@ -503,7 +510,8 @@ export function renderPage(c) {
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
       <strong>Lumora can't reach this cooler yet</strong>
       <span>${ctx.esc(c.message)}</span>
-      <button class="btn" data-copy-report>Copy the troubleshooting report</button>
+      <div class="row-actions"><button class="btn" data-copy-report>Copy the troubleshooting report</button>
+      <button class="btn" data-rerun-setup>Run the setup again</button></div>
     </div></div>`;
     return;
   }
@@ -572,6 +580,16 @@ function onClick(ev) {
   const c = selectedCooler();
   if (!c) return;
   if (ev.target.closest('[data-takeover="on"]')) return askTakeover(c);
+  const rr = ev.target.closest('[data-rerun-setup]');
+  if (rr) {
+    rr.disabled = true;
+    rr.textContent = 'Setting up…';
+    ctx.api.invoke('setup_cooler_access')
+      .then(() => ctx.toast('Setup finished. Lumora looks for the cooler again within a few seconds.'))
+      .catch((err) => ctx.toast(`Setup didn't finish: ${err}`))
+      .finally(() => render());
+    return;
+  }
   const sp = ev.target.closest('[data-speed]');
   if (sp) {
     const ch = c.channels.find((x) => x.id === sp.dataset.speed);

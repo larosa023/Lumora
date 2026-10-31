@@ -177,7 +177,65 @@ impl Drop for UsbLink {
     }
 }
 
+/// A detailed look through a fresh access context: every Corsair device it
+/// lists, whether the cooler opens, and libusb's own messages on the way.
+pub fn diagnose_access() -> String {
+    use std::sync::{Arc, Mutex};
+    let mut out = Vec::new();
+    let log = Arc::new(Mutex::new(Vec::<String>::new()));
+    let mut ctx = match access_context() {
+        Some(c) => c,
+        None => return "access context: couldn't start (UsbDk not available to this process)".into(),
+    };
+    let sink = log.clone();
+    ctx.set_log_level(rusb::LogLevel::Info);
+    ctx.set_log_callback(
+        Box::new(move |_level, msg| {
+            if let Ok(mut l) = sink.lock() {
+                if l.len() < 40 {
+                    l.push(msg.trim().to_string());
+                }
+            }
+        }),
+        rusb::LogCallbackMode::Context,
+    );
+    match ctx.devices() {
+        Err(e) => out.push(format!("device list failed: {e}")),
+        Ok(list) => {
+            out.push(format!("devices listed: {}", list.len()));
+            for d in list.iter() {
+                if let Ok(desc) = d.device_descriptor() {
+                    if desc.vendor_id() == CORSAIR_VID {
+                        out.push(format!("corsair {:04x}:{:04x} bus {} port {}", desc.vendor_id(), desc.product_id(), d.bus_number(), d.port_number()));
+                    }
+                }
+            }
+        }
+    }
+    for (id, _, dev) in list(&ctx) {
+        let opened = dev.open().and_then(|h| {
+            h.claim_interface(0).or_else(|_| {
+                let _ = h.set_active_configuration(1);
+                h.claim_interface(0)
+            })?;
+            h.write_control(REQUEST_TYPE_VENDOR_OUT, USBXPRESS_REQUEST, USBXPRESS_CLEAR_TO_SEND, 0, &[], TIMEOUT)?;
+            Ok(())
+        });
+        out.push(format!("open {id}: {}", opened.map(|_| "ok".to_string()).unwrap_or_else(|e| e.to_string())));
+    }
+    if let Ok(l) = log.lock() {
+        for m in l.iter().filter(|m| !m.is_empty()) {
+            out.push(format!("libusb: {m}"));
+        }
+    }
+    out.join("\n")
+}
+
 impl Backend for UsbBackend {
+    fn diagnose(&mut self) -> String {
+        diagnose_access()
+    }
+
     fn discover(&mut self) -> Vec<FoundCooler> {
         // Not set up yet: look for UsbDk afresh (no context alive, see
         // `access_context`).
@@ -196,6 +254,7 @@ impl Backend for UsbBackend {
             }
         }
         let helper_up = matches!(relay, Some(Ok(_)));
+        let helper_outdated = matches!(&relay, Some(Err(e)) if e.kind() == io::ErrorKind::InvalidData);
         let usbdk_installed = !cfg!(windows) || crate::system::service_state("UsbDk").is_some();
 
         // Windows' own view lists every cooler plugged in, set up or not.
@@ -222,7 +281,11 @@ impl Backend for UsbBackend {
                     // Everything is installed but the cooler isn't reachable
                     // yet: usually a restart after the driver install.
                     needs_restart: waiting,
-                    problem: waiting.then(usbdk_problem).flatten(),
+                    problem: if setup && helper_outdated {
+                        Some("Lumora's helper is from an older version. Run the setup once more to update it (one Windows prompt).".into())
+                    } else {
+                        waiting.then(usbdk_problem).flatten()
+                    },
                 }
             })
             .collect();

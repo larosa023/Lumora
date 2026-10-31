@@ -71,6 +71,11 @@ pub struct FoundCooler {
 pub trait Backend: Send {
     fn discover(&mut self) -> Vec<FoundCooler>;
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>>;
+    /// Details for the troubleshooting report (what this backend can see and
+    /// why not), when it has any.
+    fn diagnose(&mut self) -> String {
+        String::new()
+    }
     /// Opens the cooler's bulk connection, for coolers that take pictures.
     fn open_bulk(&mut self, _cooler: &FoundCooler) -> io::Result<Box<dyn Bulk>> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "this cooler doesn't take pictures"))

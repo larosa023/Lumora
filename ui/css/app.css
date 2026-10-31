@@ -2315,3 +2315,10 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
     transition: none !important;
   }
 }
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
