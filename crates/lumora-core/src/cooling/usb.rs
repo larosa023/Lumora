@@ -77,7 +77,7 @@ impl Companion {
                 return Err(io::Error::new(io::ErrorKind::NotFound, "the USBXpress companion is missing from this copy of Lumora"));
             }
             let mut cmd = std::process::Command::new(&self.exe);
-            cmd.arg("--key-file").arg(&self.key_file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.arg("--parent").arg(std::process::id().to_string()).arg("--key-file").arg(&self.key_file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -87,6 +87,16 @@ impl Companion {
             std::thread::sleep(Duration::from_millis(600));
         }
         reachable(USBXPRESS_PORT, key)
+    }
+}
+
+/// Stops every running copy of the companion (before an update replaces
+/// it, and when Lumora exits).
+pub fn stop_companions() {
+    for p in crate::system::processes() {
+        if p.name == "lumora-usbxpress.exe" {
+            crate::system::kill(p.pid);
+        }
     }
 }
 

@@ -548,6 +548,8 @@ async fn install_update(handle: AppHandle) -> CmdResult<()> {
             if let Some(host) = handle.try_state::<Arc<EngineHost>>() {
                 host.stop_for_update();
             }
+            // The installer replaces the USBXpress companion too.
+            lumora_core::cooling::usb::stop_companions();
             update.install(bytes)
         }
         Err(e) => Err(e),
@@ -800,6 +802,7 @@ pub fn run() {
             if let Some(cooling) = handle.try_state::<CoolingManager>() {
                 cooling.shutdown();
             }
+            lumora_core::cooling::usb::stop_companions();
         }
     });
 }

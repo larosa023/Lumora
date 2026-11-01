@@ -8,7 +8,7 @@
 //! supported coolers are reachable. It needs no admin rights; Lumora starts
 //! it when needed and stops it on exit.
 //!
-//! Usage: `lumora-usbxpress --key-file <path>`
+//! Usage: `lumora-usbxpress --key-file <path> [--parent <Lumora's process id>]`
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -23,6 +23,16 @@ fn main() {
             .map(std::path::PathBuf::from)
             .or_else(lumora_core::cooling::relay::default_key_file);
         let Some(key_file) = key_file else { return };
+        // Leave when Lumora does (it passes its process id), so no copy is
+        // left holding the cooler or blocking an update's installer.
+        if let Some(parent) = args.iter().position(|a| a == "--parent").and_then(|i| args.get(i + 1)).and_then(|p| p.parse::<u32>().ok()) {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if !lumora_core::system::processes().iter().any(|p| p.pid == parent) {
+                    std::process::exit(0);
+                }
+            });
+        }
         lumora_core::cooling::relay::run_on(
             lumora_core::cooling::relay::USBXPRESS_PORT,
             Box::new(lumora_core::cooling::siusbxp::UsbXpressBackend),
