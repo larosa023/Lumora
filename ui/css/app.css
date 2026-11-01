@@ -211,6 +211,11 @@ p {
 /* --- Title bar ------------------------------------------------------------- */
 
 .titlebar {
+  /* Above the panels below it, so its menus (profiles) open on top of them.
+     The glass blur makes the bar its own layer, which would otherwise trap
+     the menu beneath the panels. Dialogs sit higher still. */
+  position: relative;
+  z-index: 40;
   height: 48px;
   flex: none;
   display: flex;
@@ -290,7 +295,7 @@ p {
 :root[data-theme='frost'] .menu,
 :root[data-theme='frost'] .picker,
 :root[data-theme='frost'] .sheet {
-  background: rgba(24, 22, 36, 0.82);
+  background: rgba(24, 22, 36, 0.94);
 }
 
 .menu-item {
