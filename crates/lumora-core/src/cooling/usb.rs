@@ -51,7 +51,11 @@ pub struct Companion {
 
 impl Companion {
     pub fn new(exe: std::path::PathBuf, key_file: std::path::PathBuf) -> Self {
-        Companion { exe, key_file, child: None }
+        Companion {
+            exe,
+            key_file,
+            child: None,
+        }
     }
 
     /// Starts the companion if it isn't serving (or is from another version).
@@ -71,13 +75,25 @@ impl Companion {
             }
             Err(_) => {}
         }
-        let running = self.child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+        let running = self
+            .child
+            .as_mut()
+            .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
         if !running {
             if !self.exe.is_file() {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "the USBXpress companion is missing from this copy of Lumora"));
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the USBXpress companion is missing from this copy of Lumora",
+                ));
             }
             let mut cmd = std::process::Command::new(&self.exe);
-            cmd.arg("--parent").arg(std::process::id().to_string()).arg("--key-file").arg(&self.key_file).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.arg("--parent")
+                .arg(std::process::id().to_string())
+                .arg("--key-file")
+                .arg(&self.key_file)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -457,7 +473,9 @@ impl Backend for UsbBackend {
             .map(|k| super::relay::reachable(super::relay::PORT, k));
         if let Some(Ok(ids)) = &relay {
             for id in ids {
-                self.routes.entry(id.clone()).or_insert(Route::Relay(super::relay::PORT));
+                self.routes
+                    .entry(id.clone())
+                    .or_insert(Route::Relay(super::relay::PORT));
             }
         }
         // Windows-only: a cooler whose driver libusb can use directly needs
@@ -483,14 +501,20 @@ impl Backend for UsbBackend {
         {
             let plugged_unreached = Context::new()
                 .ok()
-                .map(|ctx| list(&ctx).into_iter().any(|(id, _, _)| !self.routes.contains_key(&id)))
+                .map(|ctx| {
+                    list(&ctx)
+                        .into_iter()
+                        .any(|(id, _, _)| !self.routes.contains_key(&id))
+                })
                 .unwrap_or(false);
             let key = self.relay_key.clone();
             if let (Some(c), Some(key)) = (self.companion.as_mut(), key) {
                 if plugged_unreached && super::siusbxp::needs_companion() {
                     if let Ok(ids) = c.ensure(&key) {
                         for id in ids {
-                            self.routes.entry(id).or_insert(Route::Relay(super::relay::USBXPRESS_PORT));
+                            self.routes
+                                .entry(id)
+                                .or_insert(Route::Relay(super::relay::USBXPRESS_PORT));
                         }
                     }
                 }

@@ -215,6 +215,7 @@ const commands = {
   set_cooler_config: ({ id, config }) => {
     const k = state.coolers.find((c) => c.id === id);
     k.takeover = config.takeover;
+    k.leave_speeds = !!config.leave_speeds;
     for (const ch of k.channels) {
       if (config.speeds[ch.id]) ch.setting = config.speeds[ch.id];
       ch.table = tableFor(ch.id, ch.setting);

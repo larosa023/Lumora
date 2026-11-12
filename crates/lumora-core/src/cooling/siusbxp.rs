@@ -126,7 +126,11 @@ pub fn pe_bits(path: &Path) -> Option<u32> {
 /// 32-bit): Lumora's 32-bit companion has to load it.
 pub fn needs_companion() -> bool {
     let mine = usize::BITS;
-    let found: Vec<u32> = candidates().iter().filter(|p| p.is_file()).filter_map(|p| pe_bits(p)).collect();
+    let found: Vec<u32> = candidates()
+        .iter()
+        .filter(|p| p.is_file())
+        .filter_map(|p| pe_bits(p))
+        .collect();
     !found.is_empty() && !found.contains(&mine)
 }
 
@@ -349,10 +353,14 @@ pub struct UsbXpressBackend;
 impl super::Backend for UsbXpressBackend {
     fn discover(&mut self) -> Vec<super::FoundCooler> {
         let Ok(api) = api() else { return Vec::new() };
-        let Ok(devs) = api.devices() else { return Vec::new() };
+        let Ok(devs) = api.devices() else {
+            return Vec::new();
+        };
         let mut seen: std::collections::HashMap<u16, usize> = Default::default();
         devs.into_iter()
-            .filter(|(_, v, p)| *v == super::hydro::CORSAIR_VID && super::hydro::model(*p).is_some())
+            .filter(|(_, v, p)| {
+                *v == super::hydro::CORSAIR_VID && super::hydro::model(*p).is_some()
+            })
             .map(|(_, v, p)| {
                 let n = seen.entry(p).or_insert(0);
                 let id = format!("usb:{v:04x}:{p:04x}:{n}");
@@ -364,13 +372,23 @@ impl super::Backend for UsbXpressBackend {
 
     fn open(&mut self, cooler: &super::FoundCooler) -> io::Result<Box<dyn Link>> {
         let api = api().map_err(io::Error::other)?;
-        let n: usize = cooler.id.rsplit(':').next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let n: usize = cooler
+            .id
+            .rsplit(':')
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
         let devs = api.devices()?;
         let (index, _, _) = devs
             .into_iter()
             .filter(|(_, v, p)| *v == cooler.vid && *p == cooler.pid)
             .nth(n)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the cooler isn't listed by USBXpress"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the cooler isn't listed by USBXpress",
+                )
+            })?;
         Ok(Box::new(api.open(index)?))
     }
 

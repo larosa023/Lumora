@@ -57,6 +57,8 @@ pub struct CoolerView {
     /// The owner app is running right now (it will fight Lumora).
     pub owner_running: bool,
     pub takeover: bool,
+    /// Lumora leaves pump and fan speeds alone on this cooler.
+    pub leave_speeds: bool,
     pub state: CoolerState,
     pub message: String,
     /// Something that didn't work but doesn't stop the cooler (a picture
@@ -241,16 +243,20 @@ impl Drop for CoolingManager {
 }
 
 fn desired(model: &Model, cfg: &CoolerConfig) -> Applied {
-    let speeds = model
-        .channels()
-        .into_iter()
-        .map(|ch| {
-            (
-                ch.id.to_string(),
-                cfg.speeds.get(ch.id).cloned().unwrap_or_default(),
-            )
-        })
-        .collect();
+    let speeds = if cfg.leave_speeds {
+        BTreeMap::new()
+    } else {
+        model
+            .channels()
+            .into_iter()
+            .map(|ch| {
+                (
+                    ch.id.to_string(),
+                    cfg.speeds.get(ch.id).cloned().unwrap_or_default(),
+                )
+            })
+            .collect()
+    };
     Applied {
         speeds,
         screen: model.screen().map(|_| cfg.screen.clone()),
@@ -291,6 +297,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 owner_app: owner.map(String::from),
                 owner_running: owner.is_some_and(|a| owner_is_running(a, &inner.running_apps)),
                 takeover: cfg.takeover,
+                leave_speeds: cfg.leave_speeds,
                 state: r.state,
                 message: r.message.clone(),
                 notice: r.notice.clone(),
@@ -403,6 +410,11 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
     });
     let d = r.driver.as_mut().expect("opened above");
     let result = (|| -> std::io::Result<()> {
+        // Speeds Lumora no longer sets are forgotten, so taking them back
+        // later sends them again.
+        r.applied
+            .speeds
+            .retain(|ch, _| want.speeds.contains_key(ch));
         // Settings to apply, or the readings on the screen have moved on.
         if (r.applied != want || live_due) && now.duration_since(r.last_write) >= MIN_WRITE_GAP {
             // One change per pass: firmware dislikes bursts of curve writes.
@@ -747,6 +759,31 @@ mod tests {
         let writes = dev.lock().unwrap().writes;
         thread::sleep(Duration::from_millis(1500));
         assert_eq!(dev.lock().unwrap().writes, writes);
+    }
+
+    #[test]
+    fn leaving_speeds_alone_still_runs_screen_and_lighting() {
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            leave_speeds: true,
+            ..Default::default()
+        };
+        cfg.screen.brightness = 40;
+        m.set_config(&id, cfg.clone());
+        wait("screen applied", || dev.lock().unwrap().brightness == 40);
+        thread::sleep(Duration::from_millis(2500));
+        assert!(dev.lock().unwrap().curves.is_empty(), "no speed writes");
+        assert!(m.views()[0].leave_speeds);
+        assert!(m.views()[0].status.is_some(), "readings continue");
+
+        // Taking speeds back sends them.
+        cfg.leave_speeds = false;
+        m.set_config(&id, cfg);
+        wait("curves sent", || dev.lock().unwrap().curves.len() >= 2);
     }
 
     #[test]

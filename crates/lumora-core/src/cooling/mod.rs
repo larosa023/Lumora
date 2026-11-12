@@ -273,6 +273,9 @@ impl Default for LightSettings {
 pub struct CoolerConfig {
     /// Lumora drives the cooler (instead of its vendor app).
     pub takeover: bool,
+    /// Lumora runs only the lighting and screen: it never sets pump or fan
+    /// speeds, which stay as the cooler (or its last stored curve) has them.
+    pub leave_speeds: bool,
     /// Per channel ("pump", "fan").
     pub speeds: BTreeMap<String, SpeedSetting>,
     pub screen: ScreenSettings,

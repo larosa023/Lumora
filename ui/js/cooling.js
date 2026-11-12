@@ -113,6 +113,7 @@ export function sidebarHtml() {
 function configOf(c) {
   return {
     takeover: c.takeover,
+    leave_speeds: !!c.leave_speeds,
     speeds: Object.fromEntries(c.channels.map((ch) => [ch.id, ch.setting])),
     screen: c.screen ? c.screen.settings : undefined,
     light: c.light || undefined,
@@ -148,7 +149,10 @@ export function renderHead(c) {
 }
 
 /** What Lumora takes over on this cooler, in words. */
-const parts = (c) => (c.screen ? 'pump, fans and screen' : c.light ? 'pump, fans and lighting' : 'pump and fans');
+const parts = (c) => {
+  if (c.leave_speeds) return c.screen ? 'screen' : c.light ? 'lighting' : 'readings';
+  return c.screen ? 'pump, fans and screen' : c.light ? 'pump, fans and lighting' : 'pump and fans';
+};
 
 function askTakeover(c) {
   const app = c.owner_app || 'its own app';
@@ -257,6 +261,21 @@ function curveSvg(c, ch) {
     <path class="curve-area" d="${area}"/><path class="curve-line" d="${line}"/>
     ${now}${handles}
   </svg>`;
+}
+
+/** The switch that keeps Lumora's hands off the pump and fans. */
+function speedsHtml(c) {
+  if (!c.channels.length) return '';
+  const on = !c.leave_speeds;
+  const what = c.screen ? 'lighting and screen' : 'lighting';
+  const hint = on
+    ? `Turn this off and Lumora only runs the ${what}. It won't touch the pump or fan speeds.`
+    : `Lumora is leaving the pump and fans alone. They keep the speeds already set on the cooler (the last curve it was given, or its own defaults). Readings still show above.`;
+  return `<section class="cool-card${on ? '' : ' speeds-off'}">
+    <label class="toggle-row"><span><b>Control pump & fan speeds</b></span>
+      <input type="checkbox" class="switch small" id="speedsSwitch" ${on ? 'checked' : ''}></label>
+    <p class="hint">${hint}</p>
+  </section>`;
 }
 
 function channelHtml(c, ch) {
@@ -533,7 +552,7 @@ export function renderPage(c) {
     ${banner}${notice}
     ${readouts(c)}
     <div class="cool-grid">
-      <div class="cool-col">${c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
+      <div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
       <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>
     </div>
   </div>`;
@@ -798,6 +817,15 @@ function onChange(ev) {
     const file = ev.target.files && ev.target.files[0];
     ev.target.value = '';
     if (c && file) pickPicture(c, file);
+    return;
+  }
+  if (ev.target.id === 'speedsSwitch') {
+    const c = selectedCooler();
+    if (!c) return;
+    const leave = !ev.target.checked;
+    update(c, (x) => (x.leave_speeds = leave), { now: true });
+    render();
+    ctx.toast(leave ? `Lumora won't touch ${c.name}'s pump or fan speeds` : `Lumora controls ${c.name}'s pump and fans again`);
     return;
   }
   if (ev.target.id !== 'takeoverSwitch') return;
