@@ -682,6 +682,7 @@ pub fn run() {
                 }
                 Err(_) => Box::new(lumora_core::cooling::MultiBackend::new(vec![
                     Box::new(lumora_core::cooling::hid::HidBackend::new()),
+                    Box::new(lumora_core::cooling::gpu::GpuBackend::new(relay_key.clone())),
                     Box::new(
                         lumora_core::cooling::usb::UsbBackend::new(relay_key.clone()).with_companion(
                             lumora_core::cooling::usb::Companion::new(

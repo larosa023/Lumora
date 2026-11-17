@@ -15,6 +15,10 @@
 //! for Ryzen, `IntelMSR.bin` for Intel), which only allow reads of a fixed
 //! set of harmless registers.
 //!
+//! It also sets NVIDIA graphics card fan speeds for Lumora (NVML only lets
+//! admins do that; see `lumora_core::cooling::gpu`), handing them back to the
+//! driver whenever Lumora goes quiet.
+//!
 //! It also relays Corsair Hydro Pro coolers for Lumora on `127.0.0.1:6745`
 //! (see `lumora_core::cooling::relay`): the UsbDk driver those coolers need
 //! only answers programs with admin rights. The relay only signs in Lumora
@@ -65,7 +69,15 @@ mod win {
 
     type Open = unsafe extern "system" fn(*mut HANDLE) -> i32;
     type Load = unsafe extern "system" fn(HANDLE, *const u8, usize) -> i32;
-    type Execute = unsafe extern "system" fn(HANDLE, *const i8, *const u64, usize, *mut u64, usize, *mut usize) -> i32;
+    type Execute = unsafe extern "system" fn(
+        HANDLE,
+        *const i8,
+        *const u64,
+        usize,
+        *mut u64,
+        usize,
+        *mut usize,
+    ) -> i32;
 
     /// One PawnIO handle with one module loaded.
     struct PawnIo {
@@ -78,15 +90,23 @@ mod win {
 
     fn library() -> Result<Library, String> {
         let mut tried = Vec::new();
-        let base = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
-        for path in [base.join("PawnIO").join("PawnIOLib.dll"), PathBuf::from("PawnIOLib.dll")] {
+        let base = std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+        for path in [
+            base.join("PawnIO").join("PawnIOLib.dll"),
+            PathBuf::from("PawnIOLib.dll"),
+        ] {
             // SAFETY: loading the PawnIO driver's own user-mode library.
             match unsafe { Library::new(&path) } {
                 Ok(l) => return Ok(l),
                 Err(e) => tried.push(format!("{}: {e}", path.display())),
             }
         }
-        Err(format!("the PawnIO driver isn't installed ({})", tried.join("; ")))
+        Err(format!(
+            "the PawnIO driver isn't installed ({})",
+            tried.join("; ")
+        ))
     }
 
     impl PawnIo {
@@ -104,7 +124,9 @@ mod win {
                 }
                 let hr = load(handle, module.as_ptr(), module.len());
                 if hr < 0 {
-                    return Err(format!("the PawnIO driver refused the sensor module (0x{hr:08x})"));
+                    return Err(format!(
+                        "the PawnIO driver refused the sensor module (0x{hr:08x})"
+                    ));
                 }
                 Ok(PawnIo { lib, handle })
             }
@@ -116,8 +138,19 @@ mod win {
             let mut got = 0usize;
             // SAFETY: see `open`; buffers are sized as passed.
             let hr = unsafe {
-                let exec: Symbol<Execute> = self.lib.get(b"pawnio_execute\0").map_err(|e| e.to_string())?;
-                exec(self.handle, cname.as_ptr(), input.as_ptr(), input.len(), out.as_mut_ptr(), out.len(), &mut got)
+                let exec: Symbol<Execute> = self
+                    .lib
+                    .get(b"pawnio_execute\0")
+                    .map_err(|e| e.to_string())?;
+                exec(
+                    self.handle,
+                    cname.as_ptr(),
+                    input.as_ptr(),
+                    input.len(),
+                    out.as_mut_ptr(),
+                    out.len(),
+                    &mut got,
+                )
             };
             if hr < 0 || got == 0 {
                 return Err(format!("{name} failed (0x{hr:08x})"));
@@ -133,7 +166,12 @@ mod win {
 
     fn cpu_vendor() -> Option<Vendor> {
         // SAFETY: CPUID is always available on x86-64.
-        let (v, f) = unsafe { (core::arch::x86_64::__cpuid(0), core::arch::x86_64::__cpuid(1)) };
+        let (v, f) = unsafe {
+            (
+                core::arch::x86_64::__cpuid(0),
+                core::arch::x86_64::__cpuid(1),
+            )
+        };
         let mut id = Vec::new();
         for r in [v.ebx, v.edx, v.ecx] {
             id.extend_from_slice(&r.to_le_bytes());
@@ -160,18 +198,28 @@ mod win {
 
     impl Reader {
         fn new() -> Result<Reader, String> {
-            let vendor = cpu_vendor().ok_or("this CPU isn't supported yet (AMD Ryzen and Intel Core are)")?;
-            let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().map(PathBuf::from).unwrap_or_default();
+            let vendor = cpu_vendor()
+                .ok_or("this CPU isn't supported yet (AMD Ryzen and Intel Core are)")?;
+            let dir = std::env::current_exe()
+                .map_err(|e| e.to_string())?
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_default();
             let file = match vendor {
                 Vendor::Amd => "AMDFamily17.bin",
                 Vendor::Intel => "IntelMSR.bin",
             };
-            let module = std::fs::read(dir.join(file)).map_err(|e| format!("{file} is missing ({e})"))?;
+            let module =
+                std::fs::read(dir.join(file)).map_err(|e| format!("{file} is missing ({e})"))?;
             let io = PawnIo::open(&module)?;
             let name: Vec<u16> = "Global\\Access_PCI\0".encode_utf16().collect();
             // SAFETY: creating (or opening) a named mutex.
             let pci_lock = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
-            Ok(Reader { io, vendor, pci_lock })
+            Ok(Reader {
+                io,
+                vendor,
+                pci_lock,
+            })
         }
 
         fn read(&self) -> Result<f32, String> {
@@ -199,9 +247,13 @@ mod win {
 
     pub fn main() {
         // One copy at a time: a second one can't take the port and leaves.
-        let Ok(listener) = TcpListener::bind(("127.0.0.1", super::PORT)) else { return };
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", super::PORT)) else {
+            return;
+        };
 
         // The cooler relay, beside the temperature.
+        // Graphics card fans go back to the driver whenever Lumora goes quiet.
+        lumora_core::cooling::gpu::start_watchdog();
         if let Some(key_file) = lumora_core::cooling::relay::default_key_file() {
             std::thread::spawn(move || {
                 let backend = lumora_core::cooling::usb::UsbBackend::new(None);

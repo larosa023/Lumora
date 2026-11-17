@@ -1,7 +1,7 @@
 //! Finds coolers, takes them over when asked, keeps their settings applied
 //! and reports live readings.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -36,8 +36,17 @@ pub struct ChannelView {
     pub min_duty: u8,
     pub kind: ChannelKind,
     pub setting: SpeedSetting,
-    /// The 20..=59 °C duty table that is (or will be) on the cooler.
+    /// Duty for each degree of `range`, as the curve is drawn.
     pub table: Vec<u8>,
+    /// The temperature this channel follows ("liquid", "gpu", "cpu").
+    pub follow: String,
+    /// `(first °C, full speed °C)` of the curve.
+    pub range: (u8, u8),
+    /// It follows a reading Lumora can't get right now, so the liquid curve
+    /// is running instead.
+    pub follow_missing: bool,
+    /// Saved settings for the other temperatures, by source.
+    pub others: BTreeMap<String, SpeedSetting>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -57,6 +66,8 @@ pub struct CoolerView {
     /// The owner app is running right now (it will fight Lumora).
     pub owner_running: bool,
     pub takeover: bool,
+    /// "aio" for a liquid cooler, "gpu" for a graphics card's own fans.
+    pub kind: &'static str,
     /// Lumora leaves pump and fan speeds alone on this cooler.
     pub leave_speeds: bool,
     pub state: CoolerState,
@@ -99,6 +110,8 @@ struct Runtime {
     /// The numbers on the screen Lumora draws, and when they were drawn.
     screen_value: Vec<Option<i32>>,
     screen_drawn: Instant,
+    /// Channels Lumora is driving live from a GPU/CPU reading.
+    software: BTreeSet<String>,
 }
 
 /// Lists running vendor apps (process names), injected so tests don't depend
@@ -145,6 +158,12 @@ const LIVE_SCREEN_EVERY: Duration = if cfg!(test) {
 /// The shown number only changes when the reading moves this far from it,
 /// so a reading sitting on x.5 doesn't flip back and forth.
 const LIVE_HYSTERESIS: f32 = 0.7;
+/// Liquid this warm runs live-driven channels flat out, whatever they follow.
+const LIQUID_FAILSAFE: f32 = 55.0;
+/// A live duty only changes once it moves this far (up, down), so fans don't
+/// hunt with every flicker of the reading.
+const DUTY_STEP_UP: u8 = 3;
+const DUTY_STEP_DOWN: u8 = 5;
 
 /// How each owner app's processes start (`NZXT CAM.exe`, `iCUE.exe`, and
 /// helpers that share the name).
@@ -242,26 +261,49 @@ impl Drop for CoolingManager {
     }
 }
 
-fn desired(model: &Model, cfg: &CoolerConfig) -> Applied {
-    let speeds = if cfg.leave_speeds {
-        BTreeMap::new()
-    } else {
-        model
-            .channels()
-            .into_iter()
-            .map(|ch| {
-                (
-                    ch.id.to_string(),
-                    cfg.speeds.get(ch.id).cloned().unwrap_or_default(),
-                )
-            })
-            .collect()
-    };
-    Applied {
+/// What the cooler should have. Channels following a GPU/CPU reading get a
+/// fixed duty for that reading right now (they're returned in the set);
+/// without the reading they fall back to their liquid curve.
+fn desired(
+    model: &Model,
+    cfg: &CoolerConfig,
+    liquid: Option<f32>,
+    software: &BTreeSet<String>,
+) -> (Applied, BTreeSet<String>) {
+    let mut live = BTreeSet::new();
+    let speeds = model
+        .channels()
+        .into_iter()
+        .filter_map(|ch| {
+            let id = ch.id.to_string();
+            if cfg.leave_speeds {
+                // A channel Lumora was driving live goes back to its liquid
+                // curve once, so it isn't left stuck at one speed.
+                return software
+                    .contains(ch.id)
+                    .then(|| (id, cfg.speed(ch.id, "liquid")));
+            }
+            let src = model.fixed_source().unwrap_or_else(|| cfg.source(ch.id));
+            if ch.kind == ChannelKind::Curve && !curve::is_liquid(src) {
+                if let Some(t) = temps::get(src) {
+                    let mut duty =
+                        curve::duty_at(&cfg.speed(ch.id, src), ch.id, ch.min_duty, src, t);
+                    if liquid.is_some_and(|l| l >= LIQUID_FAILSAFE) {
+                        duty = 100;
+                    }
+                    live.insert(id.clone());
+                    return Some((id, SpeedSetting::Fixed { duty }));
+                }
+            }
+            Some((id, cfg.speed(ch.id, "liquid")))
+        })
+        .collect();
+    let applied = Applied {
         speeds,
         screen: model.screen().map(|_| cfg.screen.clone()),
         light: model.light().then(|| resolve_light(&cfg.light)),
-    }
+    };
+    (applied, live)
 }
 
 /// "Match Lumora" becomes a plain color: the main effect's current color,
@@ -298,6 +340,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 owner_running: owner.is_some_and(|a| owner_is_running(a, &inner.running_apps)),
                 takeover: cfg.takeover,
                 leave_speeds: cfg.leave_speeds,
+                kind: if r.model.is_gpu() { "gpu" } else { "aio" },
                 state: r.state,
                 message: r.message.clone(),
                 notice: r.notice.clone(),
@@ -308,13 +351,33 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                     .channels()
                     .into_iter()
                     .map(|ch| {
-                        let setting = cfg.speeds.get(ch.id).cloned().unwrap_or_default();
+                        let src = if let Some(f) = r.model.fixed_source() {
+                            f
+                        } else if ch.kind == ChannelKind::Curve {
+                            cfg.source(ch.id)
+                        } else {
+                            "liquid"
+                        };
+                        let setting = cfg.speed(ch.id, src);
+                        let others = ["liquid", "gpu", "cpu"]
+                            .into_iter()
+                            .filter(|s| *s != src)
+                            .filter_map(|s| {
+                                cfg.speeds
+                                    .get(&CoolerConfig::speed_key(ch.id, s))
+                                    .map(|v| (s.to_string(), v.clone()))
+                            })
+                            .collect();
                         ChannelView {
                             id: ch.id.into(),
                             name: ch.name.into(),
                             min_duty: ch.min_duty,
                             kind: ch.kind,
-                            table: curve::table(&setting, ch.id, ch.min_duty).to_vec(),
+                            table: curve::table_for(&setting, ch.id, ch.min_duty, src),
+                            follow: src.into(),
+                            range: curve::range(src),
+                            follow_missing: !curve::is_liquid(src) && temps::get(src).is_none(),
+                            others,
                             setting,
                         }
                     })
@@ -365,6 +428,7 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
                 r.firmware = d.firmware();
                 r.driver = Some(d);
                 r.applied = Applied::default();
+                r.software.clear();
                 r.state = CoolerState::Active;
                 r.message.clear();
             }
@@ -377,7 +441,23 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
         }
     }
 
-    let want = desired(&r.model, cfg);
+    let liquid_now = r.status.as_ref().and_then(|st| st.liquid_c);
+    let (mut want, live_speeds) = desired(&r.model, cfg, liquid_now, &r.software);
+    // Live duties only move in steps, so the fans don't hunt.
+    for (ch, w) in want.speeds.iter_mut() {
+        if let (SpeedSetting::Fixed { duty: new }, Some(SpeedSetting::Fixed { duty: old })) =
+            (&*w, r.applied.speeds.get(ch))
+        {
+            let small = if new >= old {
+                new - old < DUTY_STEP_UP
+            } else {
+                old - new < DUTY_STEP_DOWN
+            };
+            if live_speeds.contains(ch) && r.software.contains(ch) && small && *new != 100 {
+                *w = SpeedSetting::Fixed { duty: *old };
+            }
+        }
+    }
     // Readings Lumora draws on the screen: the numbers to show right now.
     let live: Option<Vec<Option<i32>>> =
         want.screen
@@ -425,6 +505,11 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
             {
                 d.set_speed(ch, setting)?;
                 r.applied.speeds.insert(ch.clone(), setting.clone());
+                if live_speeds.contains(ch) {
+                    r.software.insert(ch.clone());
+                } else {
+                    r.software.remove(ch);
+                }
             } else if want.screen != r.applied.screen || live_due {
                 if let Some(s) = &want.screen {
                     let size = r.model.screen().map_or(0, |(w, _)| w as usize);
@@ -522,6 +607,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                         last_write: now - MIN_WRITE_GAP,
                         screen_value: Vec::new(),
                         screen_drawn: now,
+                        software: BTreeSet::new(),
                     });
                 }
             }
@@ -557,7 +643,12 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
             if cfg.takeover {
                 service(&mut runtime, &cfg, backend.as_mut());
             } else {
-                // Hand it back: close our handle, keep the last curve on the device.
+                // Hand it back: close our handle, keep the last curve on the
+                // device (a liquid one, not a speed Lumora was driving live).
+                if let Some(d) = runtime.driver.as_mut() {
+                    restore_curves(d.as_mut(), &cfg, &runtime.software);
+                }
+                runtime.software.clear();
                 runtime.driver = None;
                 runtime.status = None;
                 runtime.state = CoolerState::Idle;
@@ -595,6 +686,9 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
     let configs = inner.configs.clone();
     for r in inner.coolers.iter_mut() {
         if let (Some(d), Some(cfg)) = (r.driver.as_mut(), configs.get(&r.found.id)) {
+            // Speeds Lumora drove live can't follow anything once it's gone:
+            // leave the liquid curves, which the cooler runs by itself.
+            restore_curves(d.as_mut(), cfg, &r.software);
             if cfg.takeover && cfg.screen.shows_readings() {
                 let _ = d.set_screen(
                     &ScreenSettings {
@@ -605,6 +699,13 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                 );
             }
         }
+    }
+}
+
+/// Puts the liquid curve back on channels Lumora was driving live.
+fn restore_curves(d: &mut dyn Driver, cfg: &CoolerConfig, software: &BTreeSet<String>) {
+    for ch in software {
+        let _ = d.set_speed(ch, &cfg.speed(ch, "liquid"));
     }
 }
 
@@ -625,6 +726,7 @@ impl Runtime {
             last_write: self.last_write,
             screen_value: self.screen_value.clone(),
             screen_drawn: self.screen_drawn,
+            software: self.software.clone(),
         }
     }
 }
@@ -784,6 +886,60 @@ mod tests {
         cfg.leave_speeds = false;
         m.set_config(&id, cfg);
         wait("curves sent", || dev.lock().unwrap().curves.len() >= 2);
+    }
+
+    #[test]
+    fn fans_can_follow_the_gpu_and_go_back_to_liquid() {
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        temps::set("gpu", Some(65.0));
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        cfg.follow.insert("fan".into(), "gpu".into());
+        m.set_config(&id, cfg.clone());
+        // Balanced GPU curve at 65 °C: 60 %, sent as a flat table.
+        wait("live duty", || {
+            let d = dev.lock().unwrap();
+            d.curves
+                .iter()
+                .any(|(c, t)| c == "fan" && t[0] == 60 && t[30] == 60)
+                && d.curves.iter().any(|(c, _)| c == "pump")
+        });
+        let v = &m.views()[0];
+        let fan = v.channels.iter().find(|c| c.id == "fan").unwrap();
+        assert_eq!(fan.follow, "gpu");
+        assert_eq!(fan.range, (30, 89));
+        assert!(!fan.follow_missing);
+
+        // Small moves don't rewrite; big ones do.
+        temps::set("gpu", Some(64.0));
+        let n = dev.lock().unwrap().curves.len();
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(dev.lock().unwrap().curves.len(), n, "within the step");
+        temps::set("gpu", Some(75.0));
+        wait("faster", || {
+            dev.lock()
+                .unwrap()
+                .curves
+                .last()
+                .is_some_and(|(c, t)| c == "fan" && t[0] == 85)
+        });
+
+        // Handing back leaves the liquid curve on the cooler.
+        cfg.takeover = false;
+        m.set_config(&id, cfg);
+        wait("liquid curve back", || {
+            dev.lock()
+                .unwrap()
+                .curves
+                .last()
+                .is_some_and(|(c, t)| c == "fan" && t[0] == 30 && t[39] == 100)
+        });
+        temps::set("gpu", None);
     }
 
     #[test]

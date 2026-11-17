@@ -65,6 +65,28 @@ pub mod gpu {
     type Init = unsafe extern "C" fn() -> i32;
     type Handle = unsafe extern "C" fn(u32, *mut *mut std::ffi::c_void) -> i32;
     type Temp = unsafe extern "C" fn(*mut std::ffi::c_void, i32, *mut u32) -> i32;
+    type Count = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32) -> i32;
+    type FanGet = unsafe extern "C" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
+    type FanSet = unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32) -> i32;
+    type FanDefault = unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> i32;
+    type MinMax = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32, *mut u32) -> i32;
+    type Name = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u8, u32) -> i32;
+    type Pci = unsafe extern "C" fn(*mut std::ffi::c_void, *mut PciInfo) -> i32;
+
+    /// `nvmlPciInfo_t`.
+    #[repr(C)]
+    pub struct PciInfo {
+        bus_id_legacy: [u8; 16],
+        domain: u32,
+        bus: u32,
+        device: u32,
+        pci_device_id: u32,
+        pci_sub_system_id: u32,
+        bus_id: [u8; 32],
+    }
+
+    /// NVML's "not allowed" answer: setting fans needs admin rights.
+    pub const NO_PERMISSION: i32 = 4;
 
     pub struct Nvml {
         lib: Library,
@@ -102,6 +124,114 @@ pub mod gpu {
                 }
             }
             None
+        }
+
+        /// Calls a symbol with the library's own types; `None` when the
+        /// driver is too old to have it.
+        fn sym<T>(&self, name: &[u8]) -> Option<Symbol<'_, T>> {
+            // SAFETY: see `open`; each caller names the symbol's real type.
+            unsafe { self.lib.get(name).ok() }
+        }
+
+        pub fn name(&self) -> Option<String> {
+            let f = self.sym::<Name>(b"nvmlDeviceGetName\0")?;
+            let mut buf = [0u8; 96];
+            // SAFETY: the buffer is as long as we say.
+            (unsafe { f(self.device, buf.as_mut_ptr(), buf.len() as u32) } == 0).then(|| {
+                let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                String::from_utf8_lossy(&buf[..end]).trim().to_string()
+            })
+        }
+
+        /// The card's PCI device id (the top half of NVML's combined id).
+        pub fn pci_device(&self) -> Option<u16> {
+            let f = self.sym::<Pci>(b"nvmlDeviceGetPciInfo_v3\0")?;
+            let mut info: PciInfo = unsafe { std::mem::zeroed() };
+            // SAFETY: NVML fills the struct it's given.
+            (unsafe { f(self.device, &mut info) } == 0).then_some((info.pci_device_id >> 16) as u16)
+        }
+
+        pub fn fan_count(&self) -> u32 {
+            let Some(f) = self.sym::<Count>(b"nvmlDeviceGetNumFans\0") else {
+                return 0;
+            };
+            let mut n = 0u32;
+            // SAFETY: see `open`.
+            if unsafe { f(self.device, &mut n) } == 0 {
+                n.min(8)
+            } else {
+                0
+            }
+        }
+
+        /// Each fan's current speed, in percent.
+        pub fn fan_speeds(&self) -> Vec<u32> {
+            let Some(f) = self.sym::<FanGet>(b"nvmlDeviceGetFanSpeed_v2\0") else {
+                return Vec::new();
+            };
+            (0..self.fan_count())
+                .filter_map(|i| {
+                    let mut v = 0u32;
+                    // SAFETY: see `open`.
+                    (unsafe { f(self.device, i, &mut v) } == 0).then_some(v)
+                })
+                .collect()
+        }
+
+        /// The lowest and highest speed the card allows, in percent.
+        pub fn fan_range(&self) -> (u32, u32) {
+            let Some(f) = self.sym::<MinMax>(b"nvmlDeviceGetMinMaxFanSpeed\0") else {
+                return (30, 100);
+            };
+            let (mut lo, mut hi) = (0u32, 0u32);
+            // SAFETY: see `open`.
+            if unsafe { f(self.device, &mut lo, &mut hi) } == 0 && hi > lo {
+                (lo, hi.min(100))
+            } else {
+                (30, 100)
+            }
+        }
+
+        /// Sets every fan to `percent`. Returns NVML's code (0 = done).
+        pub fn set_fans(&self, percent: u32) -> i32 {
+            let Some(f) = self.sym::<FanSet>(b"nvmlDeviceSetFanSpeed_v2\0") else {
+                return 3; // NOT_SUPPORTED
+            };
+            let (lo, hi) = self.fan_range();
+            let p = percent.clamp(lo, hi);
+            let mut code = 0;
+            for i in 0..self.fan_count() {
+                // SAFETY: see `open`.
+                let r = unsafe { f(self.device, i, p) };
+                if r != 0 {
+                    code = r;
+                }
+            }
+            code
+        }
+
+        /// Hands every fan back to the driver's own automatic control.
+        pub fn auto_fans(&self) -> i32 {
+            let policy = self.sym::<FanSet>(b"nvmlDeviceSetFanControlPolicy\0");
+            let default = self.sym::<FanDefault>(b"nvmlDeviceSetDefaultFanSpeed_v2\0");
+            let mut code = 0;
+            for i in 0..self.fan_count() {
+                // SAFETY: see `open`. Policy 0 is the driver's temperature-based
+                // control; setting it first works around drivers where
+                // SetDefaultFanSpeed alone doesn't resume the automatic curve.
+                unsafe {
+                    if let Some(p) = &policy {
+                        let _ = p(self.device, i, 0);
+                    }
+                    if let Some(d) = &default {
+                        let r = d(self.device, i);
+                        if r != 0 {
+                            code = r;
+                        }
+                    }
+                }
+            }
+            code
         }
 
         pub fn temperature(&self) -> Option<f32> {

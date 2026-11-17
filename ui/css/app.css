@@ -2327,3 +2327,8 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
   gap: 8px;
   justify-content: center;
 }
+
+/* "Follows: Liquid / GPU / CPU" on a cooler curve: one compact line. */
+.follow-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: -4px; }
+.follow-row .control-label { margin: 0; }
+.follow-row .segmented { width: auto; flex: 0 0 auto; }

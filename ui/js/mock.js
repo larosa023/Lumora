@@ -30,11 +30,21 @@ const PRESET_POINTS = {
   pump: { silent: [[20, 50], [35, 60], [45, 80], [50, 100]], balanced: [[20, 60], [35, 70], [45, 90], [50, 100]], performance: [[20, 80], [30, 90], [40, 100]] },
   fan: { silent: [[20, 25], [30, 30], [36, 45], [42, 70], [48, 100]], balanced: [[20, 30], [30, 40], [36, 60], [42, 85], [48, 100]], performance: [[20, 50], [30, 65], [36, 85], [40, 100]] },
 };
-function tableFor(ch, setting) {
-  const pts = setting.mode === 'preset' ? PRESET_POINTS[ch][setting.preset]
-    : setting.mode === 'fixed' ? [[20, setting.duty], [58, setting.duty]] : setting.points;
-  return localTable(pts, ch === 'pump' ? 20 : 0);
+const MOCK_RANGES = { liquid: [20, 59], gpu: [30, 89], cpu: [35, 94] };
+function tableFor(ch, setting, src = 'liquid', min = ch === 'pump' ? 20 : 0) {
+  const [t0, t1] = MOCK_RANGES[src];
+  // Presets stretched over the reading's range (close enough for a preview).
+  const stretch = (t) => Math.round(t0 + ((t - 20) / 39) * (t1 - t0) * (src === 'liquid' ? 1 : 0.95));
+  const pts = setting.mode === 'preset' ? PRESET_POINTS[ch][setting.preset].map(([t, d]) => [stretch(t), d])
+    : setting.mode === 'fixed' ? [[t0, setting.duty], [t1 - 1, setting.duty]] : setting.points;
+  return localTable(pts, min, [t0, t1]);
 }
+const gpuCard = {
+  id: 'gpu:10de:2684:0', name: 'GeForce RTX 4090', vendor: 'NVIDIA', kind: 'gpu', owner_app: null, owner_running: false,
+  takeover: location.search.includes('gpu'), state: 'idle', message: '', firmware: null, status: null,
+  channels: [{ id: 'fan', name: 'Graphics card fans', min_duty: 30, kind: 'curve', follow: 'gpu', range: [30, 89], others: {}, setting: { mode: 'preset', preset: 'balanced' } }],
+  screen: null, light: null, needs_setup: location.search.includes('gpu-setup'), message: location.search.includes('gpu-setup') ? 'Setting graphics card fan speeds needs Lumora\'s small helper with admin rights. One Windows prompt sets it up (the same helper that reads the CPU temperature).' : '', notice: '',
+};
 const kraken = {
   id: 'hid:1e71:300c:DEMO', name: 'Kraken Elite (2023)', vendor: 'NZXT', owner_app: 'NZXT CAM', owner_running: false,
   takeover: location.search.includes('cooler'), state: 'idle', message: '', firmware: '2.4.0', status: null,
@@ -57,7 +67,11 @@ const hydro = {
   light: { mode: 'static', colors: ['#7c5cff', '#00d2ff'], speed: 'normal' },
   needs_setup: location.search.includes('corsair-setup'), notice: '',
 };
-[kraken, hydro].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting))));
+[kraken, hydro].forEach((k) => {
+  k.kind = 'aio';
+  k.channels.forEach((c) => Object.assign(c, { follow: 'liquid', range: [20, 59], others: {} }));
+});
+[kraken, hydro, gpuCard].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting, c.follow, c.min_duty))));
 let liquid = 33.2;
 let cpuOn = location.search.includes('cpu');
 
@@ -120,7 +134,7 @@ const state = {
     preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
   ],
   active_profile: null,
-  coolers: [kraken, hydro],
+  coolers: [kraken, hydro, gpuCard],
   temps: [],
   launch_at_login: false,
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
@@ -189,9 +203,13 @@ setInterval(() => {
   } else {
     h.status = null;
   }
+  const g = state.coolers[2];
+  g.state = !g.takeover ? 'idle' : g.needs_setup ? 'needs_setup' : 'active';
+  const gpuNow = 54 + Math.round(Math.sin(performance.now() / 9000) * 80) / 10;
+  g.status = g.state === 'active' ? { fan_duty: g.channels[0].table[Math.max(0, Math.min(59, Math.round(gpuNow) - 30))], fault: false } : null;
   state.temps = [
     ...(k.takeover ? [{ source: 'liquid', celsius: k.status.liquid_c }] : []),
-    { source: 'gpu', celsius: 54 + Math.round(Math.sin(performance.now() / 9000) * 80) / 10 },
+    { source: 'gpu', celsius: gpuNow },
     ...(cpuOn ? [{ source: 'cpu', celsius: 47 + Math.round(Math.cos(performance.now() / 7000) * 60) / 10 }] : []),
   ];
   emit('lumora://coolers', structuredClone(state.coolers));
@@ -217,8 +235,15 @@ const commands = {
     k.takeover = config.takeover;
     k.leave_speeds = !!config.leave_speeds;
     for (const ch of k.channels) {
-      if (config.speeds[ch.id]) ch.setting = config.speeds[ch.id];
-      ch.table = tableFor(ch.id, ch.setting);
+      const src = k.kind === 'gpu' ? 'gpu' : (config.follow || {})[ch.id] || 'liquid';
+      const key = (x) => (x === 'liquid' ? ch.id : `${ch.id}@${x}`);
+      ch.follow = src;
+      ch.range = MOCK_RANGES[src];
+      ch.setting = config.speeds[key(src)] || { mode: 'preset', preset: 'balanced' };
+      ch.others = {};
+      for (const o of ['liquid', 'gpu', 'cpu']) if (o !== src && config.speeds[key(o)]) ch.others[o] = config.speeds[key(o)];
+      ch.follow_missing = src === 'cpu' && !cpuOn;
+      ch.table = tableFor(ch.id, ch.setting, src, ch.min_duty);
     }
     if (config.screen && k.screen) k.screen.settings = config.screen;
     if (config.light && k.light) k.light = config.light;
@@ -229,6 +254,7 @@ const commands = {
   setup_cpu_sensor: async () => {
     await new Promise((r) => setTimeout(r, 700));
     cpuOn = true;
+    state.coolers.forEach((c) => { if (c.kind === 'gpu') { c.needs_setup = false; c.message = ''; } });
   },
   setup_cooler_access: async () => {
     await new Promise((r) => setTimeout(r, 900));

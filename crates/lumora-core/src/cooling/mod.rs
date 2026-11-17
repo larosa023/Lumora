@@ -14,6 +14,7 @@ pub mod curve;
 pub mod fake;
 pub mod family;
 pub mod glyphs;
+pub mod gpu;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod hydro;
@@ -42,6 +43,10 @@ pub trait Link: Send {
     fn write(&mut self, msg: &[u8]) -> io::Result<()>;
     /// Returns `Ok(None)` on timeout.
     fn read(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>>;
+    /// Hands over what a graphics card driver needs (see [`gpu`]).
+    fn take_gpu(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        None
+    }
 }
 
 /// A one-way bulk connection for large transfers (pictures for a Kraken's
@@ -276,10 +281,40 @@ pub struct CoolerConfig {
     /// Lumora runs only the lighting and screen: it never sets pump or fan
     /// speeds, which stay as the cooler (or its last stored curve) has them.
     pub leave_speeds: bool,
-    /// Per channel ("pump", "fan").
+    /// Per channel ("pump", "fan") for curves on the liquid temperature, and
+    /// "fan@gpu" style keys for curves on another reading.
     pub speeds: BTreeMap<String, SpeedSetting>,
+    /// The temperature each channel follows ("liquid" when missing, "gpu",
+    /// "cpu"). Anything but liquid is driven live by Lumora.
+    pub follow: BTreeMap<String, String>,
     pub screen: ScreenSettings,
     pub light: LightSettings,
+}
+
+impl CoolerConfig {
+    /// The temperature `channel` follows.
+    pub fn source(&self, channel: &str) -> &str {
+        match self.follow.get(channel).map(String::as_str) {
+            Some(s @ ("gpu" | "cpu")) => s,
+            _ => "liquid",
+        }
+    }
+
+    /// Where the setting for `channel` following `source` is kept.
+    pub fn speed_key(channel: &str, source: &str) -> String {
+        if curve::is_liquid(source) {
+            channel.to_string()
+        } else {
+            format!("{channel}@{source}")
+        }
+    }
+
+    pub fn speed(&self, channel: &str, source: &str) -> SpeedSetting {
+        self.speeds
+            .get(&Self::speed_key(channel, source))
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 /// One reading from a cooler.

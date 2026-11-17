@@ -5,6 +5,7 @@ use std::io;
 use serde::Serialize;
 
 use super::curve::SpeedSetting;
+use super::gpu::{self, GpuFans, GpuModel};
 use super::hydro::{self, HydroModel, HydroPro};
 use super::kraken::{self, Kraken, KrakenModel, PUMP_MIN_DUTY};
 use super::{Bulk, CoolerStatus, LightSettings, Link, ScreenSettings};
@@ -32,6 +33,8 @@ pub struct ChannelSpec {
 pub enum Model {
     Kraken(&'static KrakenModel),
     Hydro(&'static HydroModel),
+    /// A graphics card's own fans.
+    Gpu(&'static GpuModel),
 }
 
 impl Model {
@@ -39,6 +42,7 @@ impl Model {
         match vid {
             kraken::NZXT_VID => kraken::model(pid).map(Model::Kraken),
             hydro::CORSAIR_VID => hydro::model(pid).map(Model::Hydro),
+            gpu::NVIDIA_VID => gpu::model(pid).map(Model::Gpu),
             _ => None,
         }
     }
@@ -47,6 +51,7 @@ impl Model {
         match self {
             Model::Kraken(m) => m.name,
             Model::Hydro(m) => m.name,
+            Model::Gpu(m) => m.name,
         }
     }
 
@@ -54,6 +59,7 @@ impl Model {
         match self {
             Model::Kraken(_) => "NZXT",
             Model::Hydro(_) => "Corsair",
+            Model::Gpu(_) => "NVIDIA",
         }
     }
 
@@ -76,6 +82,12 @@ impl Model {
                 }
                 v
             }
+            Model::Gpu(m) => vec![ChannelSpec {
+                id: "fan",
+                name: "Graphics card fans",
+                min_duty: m.min_duty,
+                kind: ChannelKind::Curve,
+            }],
             Model::Hydro(_) => vec![
                 ChannelSpec {
                     id: "pump",
@@ -97,8 +109,18 @@ impl Model {
     pub fn screen(&self) -> Option<(u16, u16)> {
         match self {
             Model::Kraken(m) => m.lcd,
-            Model::Hydro(_) => None,
+            Model::Hydro(_) | Model::Gpu(_) => None,
         }
+    }
+
+    /// The temperature every channel follows, when it can't be chosen.
+    pub fn fixed_source(&self) -> Option<&'static str> {
+        matches!(self, Model::Gpu(_)).then_some("gpu")
+    }
+
+    /// A graphics card rather than a liquid cooler.
+    pub fn is_gpu(&self) -> bool {
+        matches!(self, Model::Gpu(_))
     }
 
     /// Has lighting the cooler runs itself (set from the cooling page).
@@ -111,6 +133,7 @@ impl Model {
         match self {
             Model::Kraken(_) => 0,
             Model::Hydro(m) => m.fans,
+            Model::Gpu(_) => 0,
         }
     }
 
@@ -118,6 +141,7 @@ impl Model {
         match self {
             Model::Kraken(m) => Box::new(Kraken::new(link, m)),
             Model::Hydro(m) => Box::new(HydroPro::new(link, m)),
+            Model::Gpu(m) => Box::new(GpuFans::new(link, m)),
         }
     }
 }

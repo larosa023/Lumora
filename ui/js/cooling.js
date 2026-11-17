@@ -6,7 +6,11 @@ const PRESETS = [
   ['balanced', 'Balanced'],
   ['performance', 'Performance'],
 ];
-const T0 = 20, T1 = 59, TMAX = 60;
+// Each curve spans its temperature's range: [first °C, full speed °C].
+const RANGES = { liquid: [20, 59], gpu: [30, 89], cpu: [35, 94] };
+const FOLLOW = [['liquid', 'Liquid'], ['gpu', 'GPU'], ['cpu', 'CPU']];
+const rangeOf = (ch) => ch.range || RANGES[ch.follow] || RANGES.liquid;
+const isGpu = (c) => c.kind === 'gpu';
 const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
 const SCREEN_MODES = [['temperature', 'Temperature'], ['liquid', 'NZXT built-in'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
 const PALETTE = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400', '#3ddc97'];
@@ -84,6 +88,10 @@ const coolers = () => ctx.state.app.coolers || [];
 export const coolerId = (sel) => (sel && sel.startsWith('cooler:') ? sel.slice(7) : null);
 export const selectedCooler = () => coolers().find((c) => c.id === coolerId(ctx.state.selected)) || null;
 const fmt = (v, digits = 0) => (v == null ? '–' : Number(v).toFixed(digits));
+/** A live reading: the cooler's liquid, or a GPU/CPU temperature. */
+const tempOf = (c, src) => (src === 'liquid' ? c.status?.liquid_c : ctx.state.app.temps?.find((x) => x.source === src)?.celsius);
+/** The number shown beside a cooler in the sidebar. */
+const mainTemp = (c) => tempOf(c, isGpu(c) ? 'gpu' : 'liquid');
 
 // --- Sidebar -----------------------------------------------------------------
 
@@ -91,16 +99,16 @@ export function sidebarHtml() {
   const list = coolers();
   if (!list.length) return '';
   return '<div class="group-title">Cooler control</div>' + list.map((c) => {
-    const live = c.state === 'active' && c.status?.liquid_c != null;
+    const live = c.state === 'active' && mainTemp(c) != null;
     const badge = live
-      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${fmt(c.status.liquid_c, 1)}°</span>`
+      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${fmt(mainTemp(c), isGpu(c) ? 0 : 1)}°</span>`
       : c.takeover && c.needs_restart
         ? '<span class="nav-badge muted">Restart</span>'
         : c.takeover && c.needs_setup
         ? '<span class="nav-badge muted">Setup</span>'
         : c.takeover
         ? '<span class="nav-badge muted">…</span>'
-        : `<span class="nav-badge muted">${ctx.esc((c.owner_app || 'Off').replace(/^(NZXT|Corsair) /, ''))}</span>`;
+        : `<span class="nav-badge muted">${ctx.esc(isGpu(c) ? 'Driver' : (c.owner_app || 'Off').replace(/^(NZXT|Corsair) /, ''))}</span>`;
     return `<button class="nav-item" data-device="cooler:${ctx.esc(c.id)}" aria-current="${ctx.state.selected === 'cooler:' + c.id}" title="${ctx.esc(c.vendor + ' ' + c.name)}">
       <span class="nav-icon">${ctx.icon('cooler')}</span>
       <span class="nav-name">${ctx.esc(c.name.replace(/ \(\d{4}\)$/, ''))}</span>${badge}
@@ -114,7 +122,11 @@ function configOf(c) {
   return {
     takeover: c.takeover,
     leave_speeds: !!c.leave_speeds,
-    speeds: Object.fromEntries(c.channels.map((ch) => [ch.id, ch.setting])),
+    speeds: Object.fromEntries(c.channels.flatMap((ch) => {
+      const key = (src) => (src && src !== 'liquid' ? `${ch.id}@${src}` : ch.id);
+      return [[key(ch.follow), ch.setting], ...Object.entries(ch.others || {}).map(([src, v]) => [key(src), v])];
+    })),
+    follow: Object.fromEntries(c.channels.map((ch) => [ch.id, ch.follow || 'liquid'])),
     screen: c.screen ? c.screen.settings : undefined,
     light: c.light || undefined,
   };
@@ -143,8 +155,8 @@ export function renderHead(c) {
   $('#stageTitle').textContent = c.name;
   const bits = [c.vendor, c.firmware ? `firmware ${c.firmware}` : '', c.screen ? `${c.screen.width}×${c.screen.height} screen` : ''].filter(Boolean);
   $('#stageSub').textContent = bits.join(', ');
-  $('#stageActions').innerHTML = `<label class="chip control-chip" title="Choose who runs this cooler's pump, fans and screen">
-    <span>Run by Lumora</span><input type="checkbox" class="switch small" id="takeoverSwitch" ${c.takeover ? 'checked' : ''}>
+  $('#stageActions').innerHTML = `<label class="chip control-chip" title="${isGpu(c) ? 'Off: the NVIDIA driver runs the fans as usual' : 'Choose who runs this cooler\'s pump, fans and screen'}">
+    <span>${isGpu(c) ? 'Lumora controls the fans' : 'Run by Lumora'}</span><input type="checkbox" class="switch small" id="takeoverSwitch" ${c.takeover ? 'checked' : ''}>
   </label>`;
 }
 
@@ -154,7 +166,39 @@ const parts = (c) => {
   return c.screen ? 'pump, fans and screen' : c.light ? 'pump, fans and lighting' : 'pump and fans';
 };
 
+const setupCommand = (c) => (isGpu(c) ? 'setup_cpu_sensor' : 'setup_cooler_access');
+
+function askGpuTakeover(c) {
+  const go = $('#coolerDialogGo');
+  $('#coolerDialogTitle').textContent = `Let Lumora control the ${c.name} fans?`;
+  $('#coolerDialogText').textContent = c.needs_setup
+    ? `NVIDIA only lets programs with admin rights set fan speeds, so Lumora sets them through its small helper (the same one that reads the CPU temperature). One Windows permission prompt sets it up or updates it.`
+    : 'Lumora will set the fan speed from the GPU temperature, following your curve.';
+  $('#coolerDialogKeep').textContent = 'Close MSI Afterburner or any other fan tool first, or they will fight over the fans. Whenever Lumora closes (or you turn this off), the fans go straight back to the NVIDIA driver\'s own control.';
+  go.textContent = c.needs_setup ? 'Set up and control them' : 'Let Lumora control them';
+  go.disabled = false;
+  $('#coolerDialog').showModal();
+  go.onclick = async () => {
+    if (c.needs_setup) {
+      go.disabled = true;
+      go.textContent = 'Setting up…';
+      try {
+        await ctx.api.invoke('setup_cpu_sensor');
+      } catch (err) {
+        go.disabled = false;
+        go.textContent = 'Try again';
+        $('#coolerDialogKeep').textContent = `Setup didn't finish: ${String(err)}`;
+        return;
+      }
+      ctx.toast('Helper ready. Lumora takes over the fans within a few seconds.');
+    }
+    $('#coolerDialog').close();
+    update(c, (x) => (x.takeover = true), { now: true });
+  };
+}
+
 function askTakeover(c) {
+  if (isGpu(c)) return askGpuTakeover(c);
   const app = c.owner_app || 'its own app';
   const go = $('#coolerDialogGo');
   $('#coolerDialogTitle').textContent = c.needs_setup ? `Set up ${c.vendor} ${c.name}?` : `Let Lumora run ${c.name}?`;
@@ -192,7 +236,24 @@ function askTakeover(c) {
 
 // --- Page -------------------------------------------------------------------------
 
+function gpuReadouts(c) {
+  const s = c.status || {};
+  return `<div class="readouts">
+    <div class="readout liquid" data-readout="gpu">
+      <span class="readout-label">GPU</span>
+      <span class="readout-value"><b>${fmt(tempOf(c, 'gpu'))}</b><small>°C</small></span>
+      <span class="readout-sub">The temperature these fans follow.</span>
+    </div>
+    <div class="readout" data-readout="fan">
+      <span class="readout-label">Fans</span>
+      <span class="readout-value"><b>${fmt(s.fan_duty)}</b><small>%</small></span>
+      <span class="readout-sub">${c.leave_speeds ? 'Set by the NVIDIA driver' : 'Set by Lumora'}</span>
+    </div>
+  </div>`;
+}
+
 function readouts(c) {
+  if (isGpu(c)) return gpuReadouts(c);
   const s = c.status || {};
   const stat = (key, label, value, unit, sub) => `<div class="readout" data-readout="${key}">
       <span class="readout-label">${label}</span>
@@ -222,7 +283,8 @@ function fanSub(s) {
   return '';
 }
 
-function curvePath(table, w, h, pad) {
+function curvePath(table, w, h, pad, [T0, T1]) {
+  const TMAX = T1 + 1;
   const x = (t) => pad + ((t - T0) / (TMAX - T0)) * (w - pad * 2);
   const y = (d) => h - pad - (d / 100) * (h - pad * 2);
   const pts = table.map((d, i) => [x(T0 + i), y(d)]);
@@ -234,29 +296,36 @@ function curvePath(table, w, h, pad) {
 
 function seedPoints(ch) {
   // Five handles on the current curve, spread across the useful range.
-  return [25, 32, 39, 46, 53].map((t) => [t, ch.table[t - T0]]);
+  const [T0, T1] = rangeOf(ch);
+  const step = (T1 - T0) / 7;
+  return [1, 2, 3, 4, 5].map((k) => {
+    const t = Math.round(T0 + step * k * 1.15);
+    return [t, ch.table[t - T0]];
+  });
 }
 
 function curveSvg(c, ch) {
   const W = 560, H = 220, P = 26;
   const custom = ch.setting.mode === 'custom';
   const table = ch.table;
-  const { line, area, x, y } = curvePath(table, W, H, P);
+  const range = rangeOf(ch);
+  const [T0, T1] = range, TMAX = T1 + 1;
+  const { line, area, x, y } = curvePath(table, W, H, P, range);
   const grid = [];
-  for (let t = 20; t <= 60; t += 10) grid.push(`<line x1="${x(t)}" y1="${P}" x2="${x(t)}" y2="${H - P}"/><text x="${x(t)}" y="${H - 8}" text-anchor="middle">${t}°</text>`);
+  for (let t = Math.ceil(T0 / 10) * 10; t <= TMAX; t += 10) grid.push(`<line x1="${x(t)}" y1="${P}" x2="${x(t)}" y2="${H - P}"/><text x="${x(t)}" y="${H - 8}" text-anchor="middle">${t}°</text>`);
   for (let d = 0; d <= 100; d += 25) grid.push(`<line x1="${P}" y1="${y(d)}" x2="${W - P}" y2="${y(d)}"/><text x="${P - 6}" y="${y(d) + 4}" text-anchor="end">${d}</text>`);
-  const liquid = c.status?.liquid_c;
-  const now = liquid != null && c.state === 'active'
+  const reading = tempOf(c, ch.follow || 'liquid');
+  const now = reading != null && c.state === 'active'
     ? (() => {
-      const t = Math.max(T0, Math.min(TMAX, liquid));
-      const d = table[Math.max(0, Math.min(39, Math.round(t) - T0))];
+      const t = Math.max(T0, Math.min(TMAX, reading));
+      const d = table[Math.max(0, Math.min(table.length - 1, Math.round(t) - T0))];
       return `<g class="curve-now"><line x1="${x(t)}" y1="${P}" x2="${x(t)}" y2="${H - P}"/><circle cx="${x(t)}" cy="${y(d)}" r="5"/></g>`;
     })()
     : '';
   const handles = custom
     ? ch.setting.points.map(([t, d], i) => `<circle class="curve-handle" data-ch="${ch.id}" data-i="${i}" cx="${x(t)}" cy="${y(d)}" r="8" tabindex="0" aria-label="${t}°C, ${d}%"><title>${t}°C → ${d}%</title></circle>`).join('')
     : '';
-  return `<svg class="curve${custom ? ' editable' : ''}" viewBox="0 0 ${W} ${H}" data-curve="${ch.id}" role="img" aria-label="${ch.name} speed by liquid temperature">
+  return `<svg class="curve${custom ? ' editable' : ''}" viewBox="0 0 ${W} ${H}" data-curve="${ch.id}" role="img" aria-label="${ch.name} speed by ${ch.follow || 'liquid'} temperature">
     <g class="curve-grid">${grid.join('')}</g>
     <path class="curve-area" d="${area}"/><path class="curve-line" d="${line}"/>
     ${now}${handles}
@@ -265,7 +334,7 @@ function curveSvg(c, ch) {
 
 /** The switch that keeps Lumora's hands off the pump and fans. */
 function speedsHtml(c) {
-  if (!c.channels.length) return '';
+  if (!c.channels.length || isGpu(c)) return '';
   const on = !c.leave_speeds;
   const what = c.screen ? 'lighting and screen' : 'lighting';
   const hint = on
@@ -294,11 +363,29 @@ function channelHtml(c, ch) {
     ? `<div class="control fixed-row"><label class="control-label" for="fixed-${ch.id}"><span>Speed</span><output>${ch.setting.duty}%</output></label>
         <input type="range" id="fixed-${ch.id}" data-fixed="${ch.id}" min="${ch.min_duty}" max="100" value="${ch.setting.duty}" style="--p:${ch.setting.duty}%"></div>`
     : '';
-  const hint = mode === 'custom'
-    ? 'Drag the points. The cooler follows this curve on its own, even with Lumora closed.'
-    : ch.id === 'pump' ? `Never below ${ch.min_duty}%, so the pump can't stall. 100% from 59 °C, always.` : 'Full speed from 59 °C, always.';
+  const src = ch.follow || 'liquid';
+  const full = rangeOf(ch)[1];
+  const names = { liquid: 'liquid', gpu: 'GPU', cpu: 'CPU' };
+  let hint;
+  if (isGpu(c)) {
+    hint = `Follows the GPU temperature. Never below ${ch.min_duty}% (the card's own minimum), full speed from ${full} °C. If Lumora closes, the NVIDIA driver takes the fans back.`;
+  } else if (src !== 'liquid') {
+    hint = ch.follow_missing
+      ? `There's no ${names[src]} reading right now${src === 'cpu' ? ' (CPU temperature needs its one-time setup)' : ''}, so the cooler is on its liquid curve until one arrives.`
+      : `Lumora sets this live from the ${names[src]} temperature, full speed from ${full} °C. It only follows while Lumora is running; when Lumora closes, the cooler goes back to its liquid curve.`;
+    if (mode === 'custom') hint = 'Drag the points. ' + hint;
+  } else {
+    hint = mode === 'custom'
+      ? 'Drag the points. The cooler follows this curve on its own, even with Lumora closed.'
+      : ch.id === 'pump' ? `Never below ${ch.min_duty}%, so the pump can't stall. 100% from 59 °C, always.` : 'Full speed from 59 °C, always.';
+  }
+  const follow = isGpu(c) ? '' : `<div class="control follow-row">
+      <div class="control-label"><span>Follows</span></div>
+      <div class="segmented compact" role="radiogroup" aria-label="${ch.name} follows">${FOLLOW.map(([v, l]) => `<button role="radio" data-follow="${ch.id}" data-v="${v}" aria-checked="${src === v}">${l}</button>`).join('')}</div>
+    </div>`;
   return `<section class="cool-card">
     <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
+    ${follow}
     ${fixed}
     ${curveSvg(c, ch)}
     <p class="hint">${hint}</p>
@@ -495,6 +582,13 @@ function lightHtml(c) {
 }
 
 function setupHtml(c) {
+  if (isGpu(c)) {
+    return `<div class="cool-page"><div class="hands-off static">
+      <strong>${/older version/.test(c.message || '') ? 'Update Lumora\'s helper' : 'One-time setup needed'}</strong>
+      <span>${ctx.esc(c.message || 'Setting fan speeds needs Lumora\'s helper with admin rights.')} Until then the NVIDIA driver keeps running the fans.</span>
+      <button class="btn primary" data-takeover="on">${/older version/.test(c.message || '') ? 'Update the helper' : 'Set up'}</button>
+    </div></div>`;
+  }
   const app = c.owner_app || 'its own app';
   if (/older version/.test(c.message || '')) {
     return `<div class="cool-page"><div class="hands-off static">
@@ -512,6 +606,14 @@ function setupHtml(c) {
 
 export function renderPage(c) {
   const body = $('#stageBody');
+  if (!c.takeover && isGpu(c)) {
+    body.innerHTML = `<div class="cool-page"><div class="hands-off static">
+      <strong>The NVIDIA driver runs these fans</strong>
+      <span>Lumora isn't touching them, so they work exactly as they always have. Let Lumora control them to set your own fan curve on the GPU temperature. It's optional, and you can hand them back any time.</span>
+      <button class="btn primary" data-takeover="on">Let Lumora control the fans</button>
+    </div></div>`;
+    return;
+  }
   if (!c.takeover) {
     const app = c.owner_app || 'its own app';
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
@@ -568,9 +670,14 @@ export function refreshLive(c) {
     el.querySelector('b').textContent = value;
     if (sub != null) el.querySelector('.readout-sub').textContent = sub;
   };
-  set('liquid', fmt(s.liquid_c, 1));
-  set('pump', fmt(s.pump_rpm), pumpSub(s));
-  set('fan', fmt(s.fan_rpm), fanSub(s));
+  if (isGpu(c)) {
+    set('gpu', fmt(tempOf(c, 'gpu')));
+    set('fan', fmt(s.fan_duty));
+  } else {
+    set('liquid', fmt(s.liquid_c, 1));
+    set('pump', fmt(s.pump_rpm), pumpSub(s));
+    set('fan', fmt(s.fan_rpm), fanSub(s));
+  }
   if (!dragging) {
     for (const ch of c.channels) {
       const svg = document.querySelector(`svg[data-curve="${ch.id}"]`);
@@ -582,7 +689,8 @@ export function refreshLive(c) {
 export function refreshSidebarTemps() {
   for (const c of coolers()) {
     const el = document.querySelector(`[data-cooler-temp="${CSS.escape(c.id)}"]`);
-    if (el && c.status?.liquid_c != null) el.textContent = `${fmt(c.status.liquid_c, 1)}°`;
+    const t = mainTemp(c);
+    if (el && t != null) el.textContent = `${fmt(t, isGpu(c) ? 0 : 1)}°`;
   }
 }
 
@@ -603,11 +711,27 @@ function onClick(ev) {
   if (rr) {
     rr.disabled = true;
     rr.textContent = 'Setting up…';
-    ctx.api.invoke('setup_cooler_access')
+    ctx.api.invoke(setupCommand(c))
       .then(() => ctx.toast('Setup finished. Lumora looks for the cooler again within a few seconds.'))
       .catch((err) => ctx.toast(`Setup didn't finish: ${err}`))
       .finally(() => render());
     return;
+  }
+  const fw = ev.target.closest('[data-follow]');
+  if (fw) {
+    const ch = c.channels.find((x) => x.id === fw.dataset.follow);
+    const next = fw.dataset.v;
+    if (!ch || (ch.follow || 'liquid') === next) return;
+    update(c, () => {
+      ch.others = ch.others || {};
+      ch.others[ch.follow || 'liquid'] = ch.setting;
+      ch.setting = ch.others[next] || { mode: 'preset', preset: 'balanced' };
+      delete ch.others[next];
+      ch.follow = next;
+      ch.range = RANGES[next];
+    }, { now: true });
+    if (next === 'cpu' && cpu.state !== 'ok') ctx.toast(cpuHint());
+    return render();
   }
   const sp = ev.target.closest('[data-speed]');
   if (sp) {
@@ -836,7 +960,7 @@ function onChange(ev) {
     askTakeover(c);
   } else {
     update(c, (x) => (x.takeover = false), { now: true });
-    ctx.toast(`${c.name} is back with ${c.owner_app || 'its own app'}`);
+    ctx.toast(isGpu(c) ? `The NVIDIA driver runs the ${c.name} fans again` : `${c.name} is back with ${c.owner_app || 'its own app'}`);
   }
 }
 
@@ -859,6 +983,7 @@ document.addEventListener('pointermove', (ev) => {
   const sx = ((ev.clientX - r.left) / r.width) * box.width, sy = ((ev.clientY - r.top) / r.height) * box.height;
   const P = 26;
   const pts = ch.setting.points;
+  const [T0, T1] = rangeOf(ch), TMAX = T1 + 1;
   const lo = i > 0 ? pts[i - 1][0] + 1 : T0, hi = i < pts.length - 1 ? pts[i + 1][0] - 1 : T1;
   const t = Math.round(T0 + ((sx - P) / (box.width - P * 2)) * (TMAX - T0));
   const d = Math.round(((box.height - P - sy) / (box.height - P * 2)) * 100);
@@ -866,7 +991,7 @@ document.addEventListener('pointermove', (ev) => {
   // Duty never drops as temperature rises: drag neighbours along.
   for (let k = i + 1; k < pts.length; k++) pts[k][1] = Math.max(pts[k][1], pts[i][1]);
   for (let k = i - 1; k >= 0; k--) pts[k][1] = Math.min(pts[k][1], pts[i][1]);
-  ch.table = localTable(pts, ch.min_duty);
+  ch.table = localTable(pts, ch.min_duty, rangeOf(ch));
   svg.outerHTML = curveSvg(c, ch);
   dragging.svg = document.querySelector(`svg[data-curve="${ch.id}"]`);
 });
@@ -878,8 +1003,8 @@ document.addEventListener('pointerup', () => {
 });
 
 /** Same maths as the Rust side, for instant feedback while dragging. */
-export function localTable(points, min) {
-  const pts = [...points.map((p) => [p[0], Math.min(100, p[1])]), [59, 100]].sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+export function localTable(points, min, [T0, T1] = RANGES.liquid) {
+  const pts = [...points.map((p) => [p[0], Math.min(100, p[1])]), [T1, 100]].sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   const norm = [];
   for (const [t, d] of pts) {
     const last = norm[norm.length - 1];

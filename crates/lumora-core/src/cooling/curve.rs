@@ -51,7 +51,52 @@ pub fn preset_curve(channel: &str, preset: Preset) -> Curve {
     }
 }
 
+/// The temperature a curve follows: the cooler's liquid (the cooler runs the
+/// curve itself) or a reading Lumora feeds it ("gpu", "cpu").
+pub fn is_liquid(source: &str) -> bool {
+    !matches!(source, "gpu" | "cpu")
+}
+
+/// `(first °C, full speed °C)` of a curve following `source`.
+pub fn range(source: &str) -> (u8, u8) {
+    match source {
+        "gpu" => (30, 89),
+        "cpu" => (35, 94),
+        _ => (CURVE_START, CRITICAL),
+    }
+}
+
+/// Built-in curves for a channel following `source`.
+pub fn preset_curve_for(channel: &str, preset: Preset, source: &str) -> Curve {
+    if is_liquid(source) {
+        return preset_curve(channel, preset);
+    }
+    // Shaped for GPU/CPU readings, which run much hotter than liquid; CPU
+    // curves sit five degrees above GPU ones.
+    let shift = if source == "cpu" { 5 } else { 0 };
+    let pump = channel == "pump";
+    let pts: Curve = match (pump, preset) {
+        (true, Preset::Silent) => vec![(40, 50), (60, 60), (75, 80), (85, 100)],
+        (true, Preset::Balanced) => vec![(40, 60), (60, 70), (72, 90), (82, 100)],
+        (true, Preset::Performance) => vec![(40, 80), (55, 90), (70, 100)],
+        (false, Preset::Silent) => vec![(40, 25), (55, 30), (65, 45), (75, 70), (85, 100)],
+        (false, Preset::Balanced) => vec![(40, 30), (55, 40), (65, 60), (75, 85), (83, 100)],
+        (false, Preset::Performance) => vec![(40, 50), (55, 65), (65, 85), (72, 100)],
+    };
+    pts.into_iter().map(|(t, d)| (t + shift, d)).collect()
+}
+
 impl SpeedSetting {
+    /// The points this setting describes for a curve following `source`.
+    pub fn points_for(&self, channel: &str, source: &str) -> Curve {
+        let (start, end) = range(source);
+        match self {
+            SpeedSetting::Preset { preset } => preset_curve_for(channel, *preset, source),
+            SpeedSetting::Fixed { duty } => vec![(start, *duty), (end - 1, *duty)],
+            SpeedSetting::Custom { points } => points.clone(),
+        }
+    }
+
     /// The points this setting describes (before clamping to the channel).
     pub fn points(&self, channel: &str) -> Curve {
         match self {
@@ -65,8 +110,13 @@ impl SpeedSetting {
 /// Sorts the points, makes duty never drop as temperature rises, and adds a
 /// 100 % failsafe at the critical temperature.
 pub fn normalize(points: &[(u8, u8)]) -> Curve {
+    normalize_to(points, CRITICAL)
+}
+
+/// [`normalize`] with full speed from `critical` °C.
+pub fn normalize_to(points: &[(u8, u8)], critical: u8) -> Curve {
     let mut pts: Vec<(u8, u8)> = points.iter().map(|&(t, d)| (t, d.min(100))).collect();
-    pts.push((CRITICAL, 100));
+    pts.push((critical, 100));
     pts.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
     let mut out: Curve = Vec::with_capacity(pts.len());
     for (t, d) in pts {
@@ -117,8 +167,47 @@ pub fn table(setting: &SpeedSetting, channel: &str, min_duty: u8) -> [u8; 40] {
     out
 }
 
+/// Duty for every degree of `source`'s range, as the UI draws it.
+pub fn table_for(setting: &SpeedSetting, channel: &str, min_duty: u8, source: &str) -> Vec<u8> {
+    let (start, end) = range(source);
+    let norm = normalize_to(&setting.points_for(channel, source), end);
+    (start..=end)
+        .map(|t| interpolate(&norm, t).clamp(min_duty, 100))
+        .collect()
+}
+
+/// Duty right now for a curve following `source` at `celsius`.
+pub fn duty_at(
+    setting: &SpeedSetting,
+    channel: &str,
+    min_duty: u8,
+    source: &str,
+    celsius: f32,
+) -> u8 {
+    let (_, end) = range(source);
+    let norm = normalize_to(&setting.points_for(channel, source), end);
+    let t = celsius.round().clamp(0.0, 255.0) as u8;
+    interpolate(&norm, t).clamp(min_duty, 100)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gpu_curves_run_on_their_own_range() {
+        let s = SpeedSetting::default();
+        let t = table_for(&s, "fan", 0, "gpu");
+        assert_eq!(t.len(), 60);
+        assert_eq!(*t.last().unwrap(), 100);
+        assert_eq!(duty_at(&s, "fan", 0, "gpu", 40.0), 30);
+        assert_eq!(duty_at(&s, "fan", 0, "gpu", 95.0), 100);
+        assert_eq!(duty_at(&s, "pump", 20, "cpu", 30.0), 60);
+        // Liquid tables are unchanged.
+        assert_eq!(
+            table_for(&s, "fan", 0, "liquid"),
+            table(&s, "fan", 0).to_vec()
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -90,6 +90,8 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
     let reply =
         |out: &mut TcpStream, text: String| out.write_all(format!("{text}\n").as_bytes()).is_ok();
     let lock = || backend.lock().unwrap_or_else(|e| e.into_inner());
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let conn = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     while let Some(Ok(line)) = lines.next() {
         let (cmd, arg) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
@@ -102,6 +104,8 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
                 ("auth", _) => "err wrong key".into(),
                 _ => "err sign in first".into(),
             }
+        } else if let Some(a) = super::gpu::serve_command(conn, cmd, arg) {
+            a
         } else {
             match cmd {
                 // Lumora checks this to know when the helper needs updating.
@@ -157,6 +161,7 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
             break;
         }
     }
+    super::gpu::connection_closed(conn);
 }
 
 /// Runs the relay on `127.0.0.1:6745`.
@@ -198,6 +203,11 @@ impl Client {
         let mut c = Client { out, lines };
         c.ask(&format!("auth {key}"))?;
         Ok(c)
+    }
+
+    /// Sends one command and returns what follows "ok".
+    pub fn command(&mut self, line: &str) -> io::Result<String> {
+        self.ask(line)
     }
 
     /// Sends one line and returns what follows "ok".
