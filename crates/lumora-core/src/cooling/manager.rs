@@ -173,8 +173,11 @@ const LIVE_HYSTERESIS: f32 = 0.7;
 const LIQUID_FAILSAFE: f32 = 55.0;
 /// A live duty only changes once it moves this far (up, down), so fans don't
 /// hunt with every flicker of the reading.
-const DUTY_STEP_UP: u8 = 3;
-const DUTY_STEP_DOWN: u8 = 5;
+const DUTY_STEP_UP: u8 = 2;
+const DUTY_STEP_DOWN: u8 = 3;
+/// Live speeds only come down once the reading has dropped this far below
+/// the one that set them (the usual fan hysteresis).
+const DOWN_BAND: f32 = 1.0;
 
 /// How each owner app's processes start (`NZXT CAM.exe`, `iCUE.exe`, and
 /// helpers that share the name).
@@ -280,8 +283,10 @@ fn desired(
     cfg: &CoolerConfig,
     liquid: Option<f32>,
     software: &BTreeSet<String>,
-) -> (Applied, BTreeSet<String>) {
-    let mut live = BTreeSet::new();
+) -> (Applied, BTreeMap<String, u8>) {
+    // Live channels, each with the duty its readings would ask for if they
+    // were DOWN_BAND warmer (the lowest it may drop to right now).
+    let mut live = BTreeMap::new();
     let speeds = model
         .channels()
         .into_iter()
@@ -302,28 +307,30 @@ fn desired(
                 .any(|s| !curve::is_liquid(s) && temps::get(s).is_some());
             if ch.kind == ChannelKind::Curve && live_reading {
                 // Whichever curve asks for more.
-                let duty = srcs
-                    .iter()
-                    .filter_map(|s| {
-                        let t = if curve::is_liquid(s) {
-                            liquid
-                        } else {
-                            temps::get(s)
-                        }?;
-                        Some(curve::duty_at(
-                            &cfg.speed(ch.id, s),
-                            ch.id,
-                            ch.min_duty,
-                            s,
-                            t,
-                        ))
-                    })
-                    .max();
-                if let Some(mut duty) = duty {
+                let at = |offset: f32| {
+                    srcs.iter()
+                        .filter_map(|s| {
+                            let t = if curve::is_liquid(s) {
+                                liquid
+                            } else {
+                                temps::get(s)
+                            }?;
+                            Some(curve::duty_at(
+                                &cfg.speed(ch.id, s),
+                                ch.id,
+                                ch.min_duty,
+                                s,
+                                t + offset,
+                            ))
+                        })
+                        .max()
+                };
+                if let (Some(mut duty), Some(mut floor)) = (at(0.0), at(DOWN_BAND)) {
                     if liquid.is_some_and(|l| l >= LIQUID_FAILSAFE) {
                         duty = 100;
+                        floor = 100;
                     }
-                    live.insert(id.clone());
+                    live.insert(id.clone(), floor);
                     return Some((id, SpeedSetting::Fixed { duty }));
                 }
             }
@@ -507,19 +514,28 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
 
     let liquid_now = r.status.as_ref().and_then(|st| st.liquid_c);
     let (mut want, live_speeds) = desired(&r.model, cfg, liquid_now, &r.software);
-    // Live duties only move in steps, so the fans don't hunt.
+    // Live duties only move in steps, and only come down once the reading has
+    // really dropped, so the fans don't hunt.
     for (ch, w) in want.speeds.iter_mut() {
+        let (Some(&floor), true) = (live_speeds.get(ch), r.software.contains(ch)) else {
+            continue;
+        };
         if let (SpeedSetting::Fixed { duty: new }, Some(SpeedSetting::Fixed { duty: old })) =
             (&*w, r.applied.speeds.get(ch))
         {
-            let small = if new >= old {
-                new - old < DUTY_STEP_UP
+            let (new, old) = (*new, *old);
+            let next = if new >= old {
+                if new - old < DUTY_STEP_UP && new != 100 {
+                    old
+                } else {
+                    new
+                }
+            } else if floor >= old || old - floor < DUTY_STEP_DOWN {
+                old
             } else {
-                old - new < DUTY_STEP_DOWN
+                floor
             };
-            if live_speeds.contains(ch) && r.software.contains(ch) && small && *new != 100 {
-                *w = SpeedSetting::Fixed { duty: *old };
-            }
+            *w = SpeedSetting::Fixed { duty: next };
         }
     }
     // Readings Lumora draws on the screen: the numbers to show right now.
@@ -569,7 +585,7 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
             {
                 d.set_speed(ch, setting)?;
                 r.applied.speeds.insert(ch.clone(), setting.clone());
-                if live_speeds.contains(ch) {
+                if live_speeds.contains_key(ch) {
                     r.software.insert(ch.clone());
                 } else {
                     r.software.remove(ch);
@@ -1019,7 +1035,7 @@ mod tests {
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
         let id = m.views()[0].id.clone();
-        // The fake liquid sits at 33.4 °C: the liquid curve asks for 50 %.
+        // The fake liquid sits at 33.4 °C: the liquid curve asks for 51 %.
         temps::set("gpu", Some(40.0));
         let mut cfg = CoolerConfig {
             takeover: true,
@@ -1032,7 +1048,7 @@ mod tests {
                 .unwrap()
                 .curves
                 .iter()
-                .any(|(c, t)| c == "fan" && t[0] == 50 && t[30] == 50)
+                .any(|(c, t)| c == "fan" && t[0] == 51 && t[30] == 51)
         });
         assert_eq!(
             m.views()[0].channels[1].follow,

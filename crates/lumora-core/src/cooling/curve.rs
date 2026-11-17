@@ -186,12 +186,44 @@ pub fn duty_at(
 ) -> u8 {
     let (_, end) = range(source);
     let norm = normalize_to(&setting.points_for(channel, source), end);
-    let t = celsius.round().clamp(0.0, 255.0) as u8;
-    interpolate(&norm, t).clamp(min_duty, 100)
+    // The exact reading, not rounded to a degree: on a steep curve a reading
+    // sitting at x.5 °C would otherwise flip between two speeds.
+    (interpolate_f(&norm, celsius).round() as u8).clamp(min_duty, 100)
+}
+
+/// [`interpolate`] at a fractional temperature.
+pub fn interpolate_f(points: &[(u8, u8)], temp: f32) -> f32 {
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return 100.0;
+    };
+    if temp <= first.0 as f32 {
+        return first.1 as f32;
+    }
+    if temp >= last.0 as f32 {
+        return last.1 as f32;
+    }
+    for w in points.windows(2) {
+        let ((t0, d0), (t1, d1)) = (w[0], w[1]);
+        let (t0, t1) = (t0 as f32, t1 as f32);
+        if temp >= t0 && temp <= t1 {
+            return d0 as f32 + (temp - t0) / (t1 - t0) * (d1 as f32 - d0 as f32);
+        }
+    }
+    last.1 as f32
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn steep_curves_are_read_at_the_exact_temperature() {
+        let s = SpeedSetting::Custom {
+            points: vec![(30, 25), (33, 100)],
+        };
+        let a = duty_at(&s, "fan", 0, "liquid", 31.4);
+        let b = duty_at(&s, "fan", 0, "liquid", 31.5);
+        assert!(b - a <= 3, "{a} vs {b}");
+    }
+
     #[test]
     fn gpu_curves_run_on_their_own_range() {
         let s = SpeedSetting::default();
