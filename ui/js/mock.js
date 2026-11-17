@@ -236,6 +236,16 @@ setInterval(() => {
 
 const commands = {
   get_state: () => clone({ ...state, snapshot: state.snapshot }),
+  temp_history: () => {
+    // A made-up half hour: a game session warming the GPU, then cooling off.
+    const now = Date.now();
+    return Array.from({ length: 360 }, (_, i) => {
+      const at = now - (359 - i) * 5000;
+      const load = Math.max(0, Math.sin((i / 360) * Math.PI * 1.6));
+      const n = (k) => Math.sin(i * 0.37 + k) * 0.8;
+      return { at, values: { liquid: 31 + load * 4 + n(1) * 0.3, cpu: 45 + load * 22 + n(2) * 3, gpu: 38 + load * 30 + n(3) * 2 } };
+    });
+  },
   get_snapshot: () => clone(state.snapshot),
   set_effect: ({ device, config }) => {
     if (device) state.snapshot.overrides[device] = config;

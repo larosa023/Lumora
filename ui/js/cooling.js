@@ -1,3 +1,4 @@
+import { initTempChart, refreshTempChart, tempChartHtml } from './tempchart.js';
 // The cooling page: live readings, pump and fan curves, the pump screen, and
 // handing a cooler over from its vendor app (NZXT CAM, iCUE) to Lumora.
 
@@ -83,6 +84,7 @@ async function setupCpu(btn) {
 }
 
 export function initCooling(context) {
+  initTempChart(context.api);
   ctx = context;
   refreshCpu();
   setInterval(refreshCpu, 4000);
@@ -687,11 +689,12 @@ export function renderPage(c) {
   body.innerHTML = `<div class="cool-page">
     ${banner}${notice}
     ${readouts(c)}
+    ${tempChartHtml()}
     <div class="cool-grid">
       <div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
       <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>
     </div>
-  </div>`;
+  </div>`;  refreshTempChart(true);
 }
 
 /** Live numbers only, so dragging a curve isn't interrupted. */
@@ -712,6 +715,7 @@ export function refreshLive(c) {
     set('pump', fmt(s.pump_rpm), pumpSub(s));
     set('fan', fmt(s.fan_rpm), fanSub(s));
   }
+  refreshTempChart();
   if (!dragging) {
     for (const ch of c.channels) {
       const svg = document.querySelector(`svg[data-curve="${ch.id}"]`);

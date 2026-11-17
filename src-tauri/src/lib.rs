@@ -95,6 +95,12 @@ fn get_state(app: State<App>, host: State<Arc<EngineHost>>, cooling: State<Cooli
     }
 }
 
+/// The last half hour of temperature readings, for the chart.
+#[tauri::command]
+fn temp_history() -> Vec<lumora_core::temps::HistoryPoint> {
+    lumora_core::temps::history()
+}
+
 /// Saves and applies one cooler's settings (takeover, curves, screen).
 #[tauri::command]
 fn set_cooler_config(app: State<App>, cooling: State<CoolingManager>, id: String, config: CoolerConfig) -> CmdResult<Vec<CoolerView>> {
@@ -707,6 +713,7 @@ pub fn run() {
             app.manage(cooling);
             lumora_core::temps::gpu::start_polling();
             lumora_core::temps::cpu::start_polling();
+            lumora_core::temps::start_history();
             let temp_events = handle.clone();
             std::thread::spawn(move || loop {
                 let _ = temp_events.emit("lumora://temps", lumora_core::temps::all());
@@ -779,6 +786,7 @@ pub fn run() {
             resize_zone,
             set_device_control,
             set_cooler_config,
+            temp_history,
             diagnostic_report,
             set_launch_at_login,
             open_external,

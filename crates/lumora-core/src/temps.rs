@@ -44,6 +44,61 @@ pub struct TempReading {
 }
 
 /// Every current reading, for the UI.
+/// How often the history takes a reading, and how far back it keeps.
+pub const HISTORY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+pub const HISTORY_KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Every reading at one moment, for the temperature chart.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct HistoryPoint {
+    /// Unix time in milliseconds.
+    pub at: u64,
+    /// Celsius by source ("liquid", "cpu", "gpu").
+    pub values: std::collections::BTreeMap<String, f32>,
+}
+
+fn history_store() -> &'static Mutex<std::collections::VecDeque<HistoryPoint>> {
+    static H: OnceLock<Mutex<std::collections::VecDeque<HistoryPoint>>> = OnceLock::new();
+    H.get_or_init(|| Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Adds the current readings to the history and drops what's too old.
+pub fn record() {
+    let point = HistoryPoint {
+        at: now_ms(),
+        values: all().into_iter().map(|r| (r.source, r.celsius)).collect(),
+    };
+    let mut h = history_store().lock().unwrap_or_else(|e| e.into_inner());
+    let oldest = point.at.saturating_sub(HISTORY_KEEP.as_millis() as u64);
+    while h.front().is_some_and(|p| p.at < oldest) {
+        h.pop_front();
+    }
+    h.push_back(point);
+}
+
+/// The readings of the last half hour, oldest first.
+pub fn history() -> Vec<HistoryPoint> {
+    let h = history_store().lock().unwrap_or_else(|e| e.into_inner());
+    h.iter().cloned().collect()
+}
+
+/// Records a reading every few seconds for as long as Lumora runs.
+pub fn start_history() {
+    std::thread::Builder::new()
+        .name("lumora-temp-history".into())
+        .spawn(|| loop {
+            record();
+            std::thread::sleep(HISTORY_EVERY);
+        })
+        .ok();
+}
+
 pub fn all() -> Vec<TempReading> {
     let r = registry().lock().unwrap_or_else(|e| e.into_inner());
     let mut v: Vec<TempReading> = r
