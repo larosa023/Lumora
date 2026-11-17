@@ -284,19 +284,26 @@ pub struct CoolerConfig {
     /// Per channel ("pump", "fan") for curves on the liquid temperature, and
     /// "fan@gpu" style keys for curves on another reading.
     pub speeds: BTreeMap<String, SpeedSetting>,
-    /// The temperature each channel follows ("liquid" when missing, "gpu",
-    /// "cpu"). Anything but liquid is driven live by Lumora.
+    /// The temperatures each channel follows: "liquid", "gpu", "cpu", or
+    /// several joined by commas ("liquid,gpu": whichever curve asks for more).
+    /// Liquid alone when missing. Anything but liquid alone is driven live.
     pub follow: BTreeMap<String, String>,
     pub screen: ScreenSettings,
     pub light: LightSettings,
 }
 
 impl CoolerConfig {
-    /// The temperature `channel` follows.
-    pub fn source(&self, channel: &str) -> &str {
-        match self.follow.get(channel).map(String::as_str) {
-            Some(s @ ("gpu" | "cpu")) => s,
-            _ => "liquid",
+    /// The temperatures `channel` follows, in a fixed order, at least one.
+    pub fn sources(&self, channel: &str) -> Vec<&'static str> {
+        let picked = self.follow.get(channel).map(String::as_str).unwrap_or("");
+        let v: Vec<&'static str> = ["liquid", "gpu", "cpu"]
+            .into_iter()
+            .filter(|s| picked.split(',').any(|p| p.trim() == *s))
+            .collect();
+        if v.is_empty() {
+            vec!["liquid"]
+        } else {
+            v
         }
     }
 

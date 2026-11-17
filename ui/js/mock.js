@@ -42,7 +42,7 @@ function tableFor(ch, setting, src = 'liquid', min = ch === 'pump' ? 20 : 0) {
 const gpuCard = {
   id: 'gpu:10de:2684:0', name: 'GeForce RTX 4090', vendor: 'NVIDIA', kind: 'gpu', owner_app: null, owner_running: false,
   takeover: location.search.includes('gpu'), state: 'idle', message: '', firmware: null, status: null,
-  channels: [{ id: 'fan', name: 'Graphics card fans', min_duty: 30, kind: 'curve', follow: 'gpu', range: [30, 89], others: {}, setting: { mode: 'preset', preset: 'balanced' } }],
+  channels: [{ id: 'fan', name: 'Graphics card fans', min_duty: 30, kind: 'curve', follow: ['gpu'], setting: { mode: 'preset', preset: 'balanced' } }],
   screen: null, light: null, needs_setup: location.search.includes('gpu-setup'), message: location.search.includes('gpu-setup') ? 'Setting graphics card fan speeds needs Lumora\'s small helper with admin rights. One Windows prompt sets it up (the same helper that reads the CPU temperature).' : '', notice: '',
 };
 const kraken = {
@@ -69,9 +69,25 @@ const hydro = {
 };
 [kraken, hydro].forEach((k) => {
   k.kind = 'aio';
-  k.channels.forEach((c) => Object.assign(c, { follow: 'liquid', range: [20, 59], others: {} }));
+  k.channels.forEach((c) => (c.follow = ['liquid']));
 });
-[kraken, hydro, gpuCard].forEach((k) => k.channels.forEach((c) => (c.table = tableFor(c.id, c.setting, c.follow, c.min_duty))));
+/** What the backend sends per channel: one curve per temperature it can follow. */
+function fillCurves(k, saved = {}) {
+  for (const ch of k.channels) {
+    const choices = k.kind === 'gpu' ? ['gpu'] : ch.kind === 'curve' ? ['liquid', 'gpu', 'cpu'] : ['liquid'];
+    const key = (x) => (x === 'liquid' ? ch.id : `${ch.id}@${x}`);
+    const prev = Object.fromEntries((ch.curves || []).map((cv) => [cv.source, cv.setting]));
+    ch.curves = choices.map((src) => {
+      const setting = saved[key(src)] || prev[src] || (src === ch.follow[0] ? ch.setting : null) || { mode: 'preset', preset: 'balanced' };
+      const table = tableFor(ch.id, setting, src, ch.min_duty);
+      const [t0] = MOCK_RANGES[src];
+      const reading = src === 'liquid' ? (k.takeover ? liquid : null) : mockTemp(src);
+      return { source: src, setting, table, range: MOCK_RANGES[src], missing: reading == null, duty: reading == null ? null : table[Math.max(0, Math.min(table.length - 1, Math.round(reading) - t0))] };
+    });
+    const main = ch.curves.find((cv) => cv.source === ch.follow[0]);
+    Object.assign(ch, { setting: main.setting, table: main.table, range: main.range });
+  }
+}
 let liquid = 33.2;
 let cpuOn = location.search.includes('cpu');
 
@@ -140,6 +156,7 @@ const state = {
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
   version: '0.1.0-preview',
 };
+state.coolers.forEach((x) => fillCurves(x));
 
 const listeners = {};
 const emit = (ev, payload) => (listeners[ev] || []).forEach((cb) => cb({ payload }));
@@ -212,6 +229,7 @@ setInterval(() => {
     { source: 'gpu', celsius: gpuNow },
     ...(cpuOn ? [{ source: 'cpu', celsius: 47 + Math.round(Math.cos(performance.now() / 7000) * 60) / 10 }] : []),
   ];
+  state.coolers.forEach((x) => fillCurves(x));
   emit('lumora://coolers', structuredClone(state.coolers));
   emit('lumora://temps', structuredClone(state.temps));
 }, 1000);
@@ -235,16 +253,9 @@ const commands = {
     k.takeover = config.takeover;
     k.leave_speeds = !!config.leave_speeds;
     for (const ch of k.channels) {
-      const src = k.kind === 'gpu' ? 'gpu' : (config.follow || {})[ch.id] || 'liquid';
-      const key = (x) => (x === 'liquid' ? ch.id : `${ch.id}@${x}`);
-      ch.follow = src;
-      ch.range = MOCK_RANGES[src];
-      ch.setting = config.speeds[key(src)] || { mode: 'preset', preset: 'balanced' };
-      ch.others = {};
-      for (const o of ['liquid', 'gpu', 'cpu']) if (o !== src && config.speeds[key(o)]) ch.others[o] = config.speeds[key(o)];
-      ch.follow_missing = src === 'cpu' && !cpuOn;
-      ch.table = tableFor(ch.id, ch.setting, src, ch.min_duty);
+      ch.follow = k.kind === 'gpu' ? ['gpu'] : String((config.follow || {})[ch.id] || 'liquid').split(',').filter(Boolean);
     }
+    fillCurves(k, config.speeds);
     if (config.screen && k.screen) k.screen.settings = config.screen;
     if (config.light && k.light) k.light = config.light;
     return structuredClone(state.coolers);

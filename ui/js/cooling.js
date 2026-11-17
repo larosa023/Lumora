@@ -9,7 +9,19 @@ const PRESETS = [
 // Each curve spans its temperature's range: [first °C, full speed °C].
 const RANGES = { liquid: [20, 59], gpu: [30, 89], cpu: [35, 94] };
 const FOLLOW = [['liquid', 'Liquid'], ['gpu', 'GPU'], ['cpu', 'CPU']];
-const rangeOf = (ch) => ch.range || RANGES[ch.follow] || RANGES.liquid;
+const rangeOf = (cv) => cv.range || RANGES[cv.source] || RANGES.liquid;
+const followOf = (ch) => (Array.isArray(ch.follow) && ch.follow.length ? ch.follow : ['liquid']);
+// Which followed temperature's curve is open for editing, by cooler and channel.
+const editing = new Map();
+/** The curve being edited on a channel: one per temperature it can follow. */
+function edited(c, ch) {
+  const list = ch.curves && ch.curves.length ? ch.curves : [{ source: 'liquid', setting: ch.setting, table: ch.table, range: ch.range }];
+  const follow = followOf(ch);
+  const want = editing.get(`${c.id}/${ch.id}`);
+  const src = want && follow.includes(want) ? want : follow[0];
+  return list.find((x) => x.source === src) || list[0];
+}
+const SOURCE_NAMES = { liquid: 'Liquid', gpu: 'GPU', cpu: 'CPU' };
 const isGpu = (c) => c.kind === 'gpu';
 const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
 const SCREEN_MODES = [['temperature', 'Temperature'], ['liquid', 'NZXT built-in'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
@@ -124,9 +136,10 @@ function configOf(c) {
     leave_speeds: !!c.leave_speeds,
     speeds: Object.fromEntries(c.channels.flatMap((ch) => {
       const key = (src) => (src && src !== 'liquid' ? `${ch.id}@${src}` : ch.id);
-      return [[key(ch.follow), ch.setting], ...Object.entries(ch.others || {}).map(([src, v]) => [key(src), v])];
+      const list = ch.curves && ch.curves.length ? ch.curves : [{ source: 'liquid', setting: ch.setting }];
+      return list.map((cv) => [key(cv.source), cv.setting]);
     })),
-    follow: Object.fromEntries(c.channels.map((ch) => [ch.id, ch.follow || 'liquid'])),
+    follow: Object.fromEntries(c.channels.map((ch) => [ch.id, followOf(ch).join(',')])),
     screen: c.screen ? c.screen.settings : undefined,
     light: c.light || undefined,
   };
@@ -294,27 +307,28 @@ function curvePath(table, w, h, pad, [T0, T1]) {
   return { line, area, x, y };
 }
 
-function seedPoints(ch) {
+function seedPoints(cv) {
   // Five handles on the current curve, spread across the useful range.
-  const [T0, T1] = rangeOf(ch);
+  const [T0, T1] = rangeOf(cv);
   const step = (T1 - T0) / 7;
   return [1, 2, 3, 4, 5].map((k) => {
     const t = Math.round(T0 + step * k * 1.15);
-    return [t, ch.table[t - T0]];
+    return [t, cv.table[t - T0]];
   });
 }
 
 function curveSvg(c, ch) {
   const W = 560, H = 220, P = 26;
-  const custom = ch.setting.mode === 'custom';
-  const table = ch.table;
-  const range = rangeOf(ch);
+  const cv = edited(c, ch);
+  const custom = cv.setting.mode === 'custom';
+  const table = cv.table;
+  const range = rangeOf(cv);
   const [T0, T1] = range, TMAX = T1 + 1;
   const { line, area, x, y } = curvePath(table, W, H, P, range);
   const grid = [];
   for (let t = Math.ceil(T0 / 10) * 10; t <= TMAX; t += 10) grid.push(`<line x1="${x(t)}" y1="${P}" x2="${x(t)}" y2="${H - P}"/><text x="${x(t)}" y="${H - 8}" text-anchor="middle">${t}°</text>`);
   for (let d = 0; d <= 100; d += 25) grid.push(`<line x1="${P}" y1="${y(d)}" x2="${W - P}" y2="${y(d)}"/><text x="${P - 6}" y="${y(d) + 4}" text-anchor="end">${d}</text>`);
-  const reading = tempOf(c, ch.follow || 'liquid');
+  const reading = tempOf(c, cv.source || 'liquid');
   const now = reading != null && c.state === 'active'
     ? (() => {
       const t = Math.max(T0, Math.min(TMAX, reading));
@@ -323,9 +337,9 @@ function curveSvg(c, ch) {
     })()
     : '';
   const handles = custom
-    ? ch.setting.points.map(([t, d], i) => `<circle class="curve-handle" data-ch="${ch.id}" data-i="${i}" cx="${x(t)}" cy="${y(d)}" r="8" tabindex="0" aria-label="${t}°C, ${d}%"><title>${t}°C → ${d}%</title></circle>`).join('')
+    ? cv.setting.points.map(([t, d], i) => `<circle class="curve-handle" data-ch="${ch.id}" data-i="${i}" cx="${x(t)}" cy="${y(d)}" r="8" tabindex="0" aria-label="${t}°C, ${d}%"><title>${t}°C → ${d}%</title></circle>`).join('')
     : '';
-  return `<svg class="curve${custom ? ' editable' : ''}" viewBox="0 0 ${W} ${H}" data-curve="${ch.id}" role="img" aria-label="${ch.name} speed by ${ch.follow || 'liquid'} temperature">
+  return `<svg class="curve${custom ? ' editable' : ''}" viewBox="0 0 ${W} ${H}" data-curve="${ch.id}" role="img" aria-label="${ch.name} speed by ${SOURCE_NAMES[cv.source] || 'liquid'} temperature">
     <g class="curve-grid">${grid.join('')}</g>
     <path class="curve-area" d="${area}"/><path class="curve-line" d="${line}"/>
     ${now}${handles}
@@ -348,8 +362,9 @@ function speedsHtml(c) {
 }
 
 function channelHtml(c, ch) {
-  const mode = ch.setting.mode;
-  const active = mode === 'preset' ? ch.setting.preset : mode;
+  const cv = edited(c, ch);
+  const mode = cv.setting.mode;
+  const active = mode === 'preset' ? cv.setting.preset : mode;
   if (ch.kind === 'modes') {
     const seg = PRESETS.map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
     return `<section class="cool-card">
@@ -360,32 +375,51 @@ function channelHtml(c, ch) {
   const seg = [...PRESETS, ['fixed', 'Fixed'], ['custom', 'Custom']]
     .map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
   const fixed = mode === 'fixed'
-    ? `<div class="control fixed-row"><label class="control-label" for="fixed-${ch.id}"><span>Speed</span><output>${ch.setting.duty}%</output></label>
-        <input type="range" id="fixed-${ch.id}" data-fixed="${ch.id}" min="${ch.min_duty}" max="100" value="${ch.setting.duty}" style="--p:${ch.setting.duty}%"></div>`
+    ? `<div class="control fixed-row"><label class="control-label" for="fixed-${ch.id}"><span>Speed</span><output>${cv.setting.duty}%</output></label>
+        <input type="range" id="fixed-${ch.id}" data-fixed="${ch.id}" min="${ch.min_duty}" max="100" value="${cv.setting.duty}" style="--p:${cv.setting.duty}%"></div>`
     : '';
-  const src = ch.follow || 'liquid';
-  const full = rangeOf(ch)[1];
+  const follow = followOf(ch);
+  const src = cv.source || 'liquid';
+  const full = rangeOf(cv)[1];
+  const curves = ch.curves || [];
+  const info = (s) => curves.find((x) => x.source === s) || {};
   const names = { liquid: 'liquid', gpu: 'GPU', cpu: 'CPU' };
+  const live = follow.some((s) => s !== 'liquid');
+  const missing = follow.filter((s) => s !== 'liquid' && info(s).missing);
   let hint;
   if (isGpu(c)) {
     hint = `Follows the GPU temperature. Never below ${ch.min_duty}% (the card's own minimum), full speed from ${full} °C. If Lumora closes, the NVIDIA driver takes the fans back.`;
-  } else if (src !== 'liquid') {
-    hint = ch.follow_missing
+  } else if (follow.length > 1) {
+    // Which curve is winning right now.
+    const asks = follow.map((s) => [s, info(s).duty]).filter(([, d]) => d != null);
+    const top = asks.reduce((a, b) => (b[1] > a[1] ? b : a), asks[0] || [null, null]);
+    hint = `Runs at whichever curve asks for more${top[0] ? `. Right now: ${asks.map(([s, d]) => `${SOURCE_NAMES[s]} ${d}%`).join(', ')}, so ${SOURCE_NAMES[top[0]]} wins` : ''}. Each temperature has its own curve; pick which one to edit above. It follows live only while Lumora runs; when Lumora closes, the cooler goes back to its liquid curve.`;
+    if (missing.length === follow.filter((s) => s !== 'liquid').length) hint = `There's no ${missing.map((s) => names[s]).join(' or ')} reading right now, so the cooler is on its liquid curve until one arrives.`;
+  } else if (live) {
+    hint = missing.length
       ? `There's no ${names[src]} reading right now${src === 'cpu' ? ' (CPU temperature needs its one-time setup)' : ''}, so the cooler is on its liquid curve until one arrives.`
       : `Lumora sets this live from the ${names[src]} temperature, full speed from ${full} °C. It only follows while Lumora is running; when Lumora closes, the cooler goes back to its liquid curve.`;
-    if (mode === 'custom') hint = 'Drag the points. ' + hint;
   } else {
     hint = mode === 'custom'
-      ? 'Drag the points. The cooler follows this curve on its own, even with Lumora closed.'
+      ? 'The cooler follows this curve on its own, even with Lumora closed.'
       : ch.id === 'pump' ? `Never below ${ch.min_duty}%, so the pump can't stall. 100% from 59 °C, always.` : 'Full speed from 59 °C, always.';
   }
-  const follow = isGpu(c) ? '' : `<div class="control follow-row">
-      <div class="control-label"><span>Follows</span></div>
-      <div class="segmented compact" role="radiogroup" aria-label="${ch.name} follows">${FOLLOW.map(([v, l]) => `<button role="radio" data-follow="${ch.id}" data-v="${v}" aria-checked="${src === v}">${l}</button>`).join('')}</div>
+  if (mode === 'custom') hint = 'Drag the points. ' + hint;
+  const followRow = isGpu(c) ? '' : `<div class="control follow-row">
+      <div class="control-label"><span>Follows</span><small>pick one or more</small></div>
+      <div class="segmented compact multi" role="group" aria-label="${ch.name} follows">${FOLLOW.map(([v, l]) => `<button data-follow="${ch.id}" data-v="${v}" aria-pressed="${follow.includes(v)}">${l}</button>`).join('')}</div>
     </div>`;
+  const tabs = follow.length > 1 ? `<div class="control follow-row">
+      <div class="control-label"><span>Editing curve</span></div>
+      <div class="segmented compact" role="radiogroup" aria-label="Which curve to edit">${follow.map((s) => {
+        const d = info(s).duty;
+        return `<button role="radio" data-edit-curve="${ch.id}" data-v="${s}" aria-checked="${s === src}">${SOURCE_NAMES[s]}${d != null ? ` · ${d}%` : ''}</button>`;
+      }).join('')}</div>
+    </div>` : '';
   return `<section class="cool-card">
     <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
-    ${follow}
+    ${followRow}
+    ${tabs}
     ${fixed}
     ${curveSvg(c, ch)}
     <p class="hint">${hint}</p>
@@ -720,27 +754,34 @@ function onClick(ev) {
   const fw = ev.target.closest('[data-follow]');
   if (fw) {
     const ch = c.channels.find((x) => x.id === fw.dataset.follow);
-    const next = fw.dataset.v;
-    if (!ch || (ch.follow || 'liquid') === next) return;
+    const v = fw.dataset.v;
+    if (!ch) return;
+    const now = followOf(ch);
+    const on = now.includes(v);
+    // At least one temperature stays picked.
+    if (on && now.length === 1) return ctx.toast('A curve needs at least one temperature to follow.');
     update(c, () => {
-      ch.others = ch.others || {};
-      ch.others[ch.follow || 'liquid'] = ch.setting;
-      ch.setting = ch.others[next] || { mode: 'preset', preset: 'balanced' };
-      delete ch.others[next];
-      ch.follow = next;
-      ch.range = RANGES[next];
+      ch.follow = ['liquid', 'gpu', 'cpu'].filter((s) => (s === v ? !on : now.includes(s)));
     }, { now: true });
-    if (next === 'cpu' && cpu.state !== 'ok') ctx.toast(cpuHint());
+    if (!on) editing.set(`${c.id}/${ch.id}`, v);
+    if (!on && v === 'cpu' && cpu.state !== 'ok') ctx.toast(cpuHint());
+    return render();
+  }
+  const ec = ev.target.closest('[data-edit-curve]');
+  if (ec) {
+    editing.set(`${c.id}/${ec.dataset.editCurve}`, ec.dataset.v);
     return render();
   }
   const sp = ev.target.closest('[data-speed]');
   if (sp) {
     const ch = c.channels.find((x) => x.id === sp.dataset.speed);
     const v = sp.dataset.v;
+    const cv = edited(c, ch);
     update(c, () => {
-      if (v === 'fixed') ch.setting = { mode: 'fixed', duty: Math.max(ch.min_duty, ch.table[15]) };
-      else if (v === 'custom') ch.setting = { mode: 'custom', points: seedPoints(ch) };
-      else ch.setting = { mode: 'preset', preset: v };
+      if (v === 'fixed') cv.setting = { mode: 'fixed', duty: Math.max(ch.min_duty, cv.table[15]) };
+      else if (v === 'custom') cv.setting = { mode: 'custom', points: seedPoints(cv) };
+      else cv.setting = { mode: 'preset', preset: v };
+      if (ch.kind === 'modes') ch.setting = cv.setting;
     }, { now: true });
     return render();
   }
@@ -859,7 +900,8 @@ function onInput(ev) {
     const ch = c.channels.find((x) => x.id === t.dataset.fixed);
     t.style.setProperty('--p', `${t.value}%`);
     t.closest('.control').querySelector('output').textContent = `${t.value}%`;
-    update(c, () => (ch.setting = { mode: 'fixed', duty: +t.value }));
+    const cv = edited(c, ch);
+    update(c, () => (cv.setting = { mode: 'fixed', duty: +t.value }));
   } else if (t.dataset.screenText != null || t.dataset.screenBgColor != null) {
     t.closest('.light-swatch').style.setProperty('--c', t.value);
     update(c, (x) => {
@@ -982,8 +1024,9 @@ document.addEventListener('pointermove', (ev) => {
   const box = svg.viewBox.baseVal, r = svg.getBoundingClientRect();
   const sx = ((ev.clientX - r.left) / r.width) * box.width, sy = ((ev.clientY - r.top) / r.height) * box.height;
   const P = 26;
-  const pts = ch.setting.points;
-  const [T0, T1] = rangeOf(ch), TMAX = T1 + 1;
+  const cv = edited(c, ch);
+  const pts = cv.setting.points;
+  const [T0, T1] = rangeOf(cv), TMAX = T1 + 1;
   const lo = i > 0 ? pts[i - 1][0] + 1 : T0, hi = i < pts.length - 1 ? pts[i + 1][0] - 1 : T1;
   const t = Math.round(T0 + ((sx - P) / (box.width - P * 2)) * (TMAX - T0));
   const d = Math.round(((box.height - P - sy) / (box.height - P * 2)) * 100);
@@ -991,7 +1034,7 @@ document.addEventListener('pointermove', (ev) => {
   // Duty never drops as temperature rises: drag neighbours along.
   for (let k = i + 1; k < pts.length; k++) pts[k][1] = Math.max(pts[k][1], pts[i][1]);
   for (let k = i - 1; k >= 0; k--) pts[k][1] = Math.min(pts[k][1], pts[i][1]);
-  ch.table = localTable(pts, ch.min_duty, rangeOf(ch));
+  cv.table = localTable(pts, ch.min_duty, rangeOf(cv));
   svg.outerHTML = curveSvg(c, ch);
   dragging.svg = document.querySelector(`svg[data-curve="${ch.id}"]`);
 });

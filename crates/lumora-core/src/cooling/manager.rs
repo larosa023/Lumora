@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::curve::{self, SpeedSetting};
-use super::family::{ChannelKind, Driver, Model};
+use super::family::{ChannelKind, ChannelSpec, Driver, Model};
 use super::{
     owner_app, Backend, CoolerConfig, CoolerStatus, FoundCooler, LightMode, LightSettings,
     ScreenMode, ScreenSettings,
@@ -38,15 +38,26 @@ pub struct ChannelView {
     pub setting: SpeedSetting,
     /// Duty for each degree of `range`, as the curve is drawn.
     pub table: Vec<u8>,
-    /// The temperature this channel follows ("liquid", "gpu", "cpu").
-    pub follow: String,
     /// `(first °C, full speed °C)` of the curve.
     pub range: (u8, u8),
-    /// It follows a reading Lumora can't get right now, so the liquid curve
-    /// is running instead.
-    pub follow_missing: bool,
-    /// Saved settings for the other temperatures, by source.
-    pub others: BTreeMap<String, SpeedSetting>,
+    /// The temperatures this channel follows (one or more of "liquid",
+    /// "gpu", "cpu"); with several, whichever curve asks for more wins.
+    pub follow: Vec<String>,
+    /// One curve per temperature this channel can follow, followed or not.
+    pub curves: Vec<CurveView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct CurveView {
+    pub source: String,
+    pub setting: SpeedSetting,
+    /// Duty for each degree of `range`.
+    pub table: Vec<u8>,
+    pub range: (u8, u8),
+    /// Lumora has no reading for this temperature right now.
+    pub missing: bool,
+    /// What this curve asks for at the current reading.
+    pub duty: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -283,11 +294,32 @@ fn desired(
                     .contains(ch.id)
                     .then(|| (id, cfg.speed(ch.id, "liquid")));
             }
-            let src = model.fixed_source().unwrap_or_else(|| cfg.source(ch.id));
-            if ch.kind == ChannelKind::Curve && !curve::is_liquid(src) {
-                if let Some(t) = temps::get(src) {
-                    let mut duty =
-                        curve::duty_at(&cfg.speed(ch.id, src), ch.id, ch.min_duty, src, t);
+            let srcs = sources_of(model, &ch, cfg);
+            // Live as soon as one followed reading isn't the liquid (which
+            // the cooler can follow by itself) and Lumora has it.
+            let live_reading = srcs
+                .iter()
+                .any(|s| !curve::is_liquid(s) && temps::get(s).is_some());
+            if ch.kind == ChannelKind::Curve && live_reading {
+                // Whichever curve asks for more.
+                let duty = srcs
+                    .iter()
+                    .filter_map(|s| {
+                        let t = if curve::is_liquid(s) {
+                            liquid
+                        } else {
+                            temps::get(s)
+                        }?;
+                        Some(curve::duty_at(
+                            &cfg.speed(ch.id, s),
+                            ch.id,
+                            ch.min_duty,
+                            s,
+                            t,
+                        ))
+                    })
+                    .max();
+                if let Some(mut duty) = duty {
                     if liquid.is_some_and(|l| l >= LIQUID_FAILSAFE) {
                         duty = 100;
                     }
@@ -304,6 +336,28 @@ fn desired(
         light: model.light().then(|| resolve_light(&cfg.light)),
     };
     (applied, live)
+}
+
+/// The temperatures a channel follows (a graphics card always its own).
+fn sources_of(model: &Model, ch: &ChannelSpec, cfg: &CoolerConfig) -> Vec<&'static str> {
+    if let Some(f) = model.fixed_source() {
+        vec![f]
+    } else if ch.kind == ChannelKind::Curve {
+        cfg.sources(ch.id)
+    } else {
+        vec!["liquid"]
+    }
+}
+
+/// The temperatures a channel could follow.
+fn choices(model: &Model, ch: &ChannelSpec) -> Vec<&'static str> {
+    if let Some(f) = model.fixed_source() {
+        vec![f]
+    } else if ch.kind == ChannelKind::Curve {
+        vec!["liquid", "gpu", "cpu"]
+    } else {
+        vec!["liquid"]
+    }
 }
 
 /// "Match Lumora" becomes a plain color: the main effect's current color,
@@ -351,34 +405,44 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                     .channels()
                     .into_iter()
                     .map(|ch| {
-                        let src = if let Some(f) = r.model.fixed_source() {
-                            f
-                        } else if ch.kind == ChannelKind::Curve {
-                            cfg.source(ch.id)
-                        } else {
-                            "liquid"
-                        };
-                        let setting = cfg.speed(ch.id, src);
-                        let others = ["liquid", "gpu", "cpu"]
+                        let follow = sources_of(&r.model, &ch, &cfg);
+                        let liquid = r.status.as_ref().and_then(|st| st.liquid_c);
+                        let curves: Vec<CurveView> = choices(&r.model, &ch)
                             .into_iter()
-                            .filter(|s| *s != src)
-                            .filter_map(|s| {
-                                cfg.speeds
-                                    .get(&CoolerConfig::speed_key(ch.id, s))
-                                    .map(|v| (s.to_string(), v.clone()))
+                            .map(|s| {
+                                let setting = cfg.speed(ch.id, s);
+                                let reading = if curve::is_liquid(s) {
+                                    liquid
+                                } else {
+                                    temps::get(s)
+                                };
+                                CurveView {
+                                    source: s.into(),
+                                    table: curve::table_for(&setting, ch.id, ch.min_duty, s),
+                                    range: curve::range(s),
+                                    missing: reading.is_none(),
+                                    duty: reading.map(|t| {
+                                        curve::duty_at(&setting, ch.id, ch.min_duty, s, t)
+                                    }),
+                                    setting,
+                                }
                             })
                             .collect();
+                        let main = curves
+                            .iter()
+                            .find(|c| c.source == follow[0])
+                            .cloned()
+                            .expect("followed sources are choices");
                         ChannelView {
                             id: ch.id.into(),
                             name: ch.name.into(),
                             min_duty: ch.min_duty,
                             kind: ch.kind,
-                            table: curve::table_for(&setting, ch.id, ch.min_duty, src),
-                            follow: src.into(),
-                            range: curve::range(src),
-                            follow_missing: !curve::is_liquid(src) && temps::get(src).is_none(),
-                            others,
-                            setting,
+                            table: main.table,
+                            range: main.range,
+                            setting: main.setting,
+                            follow: follow.iter().map(|s| s.to_string()).collect(),
+                            curves,
                         }
                     })
                     .collect(),
@@ -739,6 +803,9 @@ mod tests {
     use super::super::LightSpeed;
     use super::*;
 
+    /// Tests that feed a GPU reading run one at a time.
+    static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn wait(what: &str, mut f: impl FnMut() -> bool) {
         let end = Instant::now() + Duration::from_secs(15);
         while Instant::now() < end {
@@ -890,6 +957,7 @@ mod tests {
 
     #[test]
     fn fans_can_follow_the_gpu_and_go_back_to_liquid() {
+        let _one = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let (backend, dev) = FakeBackend::with_kraken(0x300C);
         let m = manager(backend, BTreeMap::new(), &[]);
         wait("discovery", || m.views().len() == 1);
@@ -911,9 +979,11 @@ mod tests {
         });
         let v = &m.views()[0];
         let fan = v.channels.iter().find(|c| c.id == "fan").unwrap();
-        assert_eq!(fan.follow, "gpu");
+        assert_eq!(fan.follow, vec!["gpu".to_string()]);
         assert_eq!(fan.range, (30, 89));
-        assert!(!fan.follow_missing);
+        let gpu = fan.curves.iter().find(|c| c.source == "gpu").unwrap();
+        assert!(!gpu.missing);
+        assert_eq!(gpu.duty, Some(60));
 
         // Small moves don't rewrite; big ones do.
         temps::set("gpu", Some(64.0));
@@ -938,6 +1008,44 @@ mod tests {
                 .curves
                 .last()
                 .is_some_and(|(c, t)| c == "fan" && t[0] == 30 && t[39] == 100)
+        });
+        temps::set("gpu", None);
+    }
+
+    #[test]
+    fn two_temperatures_run_at_whichever_asks_for_more() {
+        let _one = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (backend, dev) = FakeBackend::with_kraken(0x300C);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        // The fake liquid sits at 33.4 °C: the liquid curve asks for 50 %.
+        temps::set("gpu", Some(40.0));
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        cfg.follow.insert("fan".into(), "gpu,liquid".into());
+        m.set_config(&id, cfg.clone());
+        wait("liquid wins", || {
+            dev.lock()
+                .unwrap()
+                .curves
+                .iter()
+                .any(|(c, t)| c == "fan" && t[0] == 50 && t[30] == 50)
+        });
+        assert_eq!(
+            m.views()[0].channels[1].follow,
+            vec!["liquid".to_string(), "gpu".to_string()]
+        );
+        // A hot GPU takes over (balanced GPU curve: 85 % at 75 °C).
+        temps::set("gpu", Some(75.0));
+        wait("gpu wins", || {
+            dev.lock()
+                .unwrap()
+                .curves
+                .last()
+                .is_some_and(|(c, t)| c == "fan" && t[0] == 85)
         });
         temps::set("gpu", None);
     }
