@@ -64,13 +64,14 @@ if ($asset.name -like '*.zip') {
 }
 Copy-Item $download (Join-Path $engine 'UsbDk_x64.msi')
 
-# PawnIO's signed modules for reading CPU temperature (AMD Ryzen, Intel).
+# PawnIO's signed modules for reading CPU temperature (AMD Ryzen, Intel) and
+# reaching the motherboard's fan chip (LpcIO).
 # The helper itself (lumora-sensors.exe) is built from this repo by CI.
 $sensors = Join-Path $engine 'sensors'
 New-Item -ItemType Directory -Force -Path $sensors | Out-Null
 try {
   $mods = Retry { Invoke-RestMethod -Uri 'https://api.github.com/repos/namazso/PawnIO.Modules/releases/latest' -Headers $apiHeaders } 'PawnIO modules lookup'
-  $wanted = @('AMDFamily17.bin', 'IntelMSR.bin')
+  $wanted = @('AMDFamily17.bin', 'IntelMSR.bin', 'LpcIO.bin')
   foreach ($a in $mods.assets) {
     if ($wanted -contains $a.name) {
       Retry { Invoke-WebRequest -Uri $a.browser_download_url -OutFile (Join-Path $sensors $a.name) } "$($a.name) download"

@@ -287,6 +287,7 @@ fn desired(
     // Live channels, each with the duty its readings would ask for if they
     // were DOWN_BAND warmer (the lowest it may drop to right now).
     let mut live = BTreeMap::new();
+    let speed = |ch: &str, src: &str| cfg.speed_or(ch, src, model.default_setting());
     let speeds = model
         .channels()
         .into_iter()
@@ -297,9 +298,17 @@ fn desired(
                 // curve once, so it isn't left stuck at one speed.
                 return software
                     .contains(ch.id)
-                    .then(|| (id, cfg.speed(ch.id, "liquid")));
+                    .then(|| (id, speed(ch.id, "liquid")));
             }
-            let srcs = sources_of(model, &ch, cfg);
+            // Temperatures whose curve is "leave it to the BIOS" don't count;
+            // with none left, the header goes back to its own control.
+            let srcs: Vec<&str> = sources_of(model, &ch, cfg)
+                .into_iter()
+                .filter(|s| speed(ch.id, s) != SpeedSetting::Auto)
+                .collect();
+            if srcs.is_empty() {
+                return Some((id, SpeedSetting::Auto));
+            }
             // Live as soon as one followed reading isn't the liquid (which
             // the cooler can follow by itself) and Lumora has it.
             // A device without curves of its own follows the liquid live too.
@@ -321,7 +330,7 @@ fn desired(
                                 temps::get(s)
                             }?;
                             Some(curve::duty_at(
-                                &cfg.speed(ch.id, s),
+                                &speed(ch.id, s),
                                 ch.id,
                                 ch.min_duty,
                                 s,
@@ -339,7 +348,7 @@ fn desired(
                     return Some((id, SpeedSetting::Fixed { duty }));
                 }
             }
-            Some((id, cfg.speed(ch.id, "liquid")))
+            Some((id, speed(ch.id, "liquid")))
         })
         .collect();
     let applied = Applied {
@@ -354,6 +363,9 @@ fn desired(
 fn sources_of(model: &Model, ch: &ChannelSpec, cfg: &CoolerConfig) -> Vec<&'static str> {
     if let Some(f) = model.fixed_source() {
         vec![f]
+    } else if matches!(model, Model::Board(_)) && !cfg.follow.contains_key(ch.id) {
+        // Motherboard headers follow the CPU until told otherwise.
+        vec!["cpu"]
     } else if ch.kind == ChannelKind::Curve {
         cfg.sources(ch.id)
     } else {
@@ -426,7 +438,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                         let curves: Vec<CurveView> = choices(&r.model, &ch)
                             .into_iter()
                             .map(|s| {
-                                let setting = cfg.speed(ch.id, s);
+                                let setting = cfg.speed_or(ch.id, s, r.model.default_setting());
                                 let reading = if curve::is_liquid(s) {
                                     liquid
                                 } else {
@@ -740,7 +752,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
                 // Hand it back: close our handle, keep the last curve on the
                 // device (a liquid one, not a speed Lumora was driving live).
                 if let Some(d) = runtime.driver.as_mut() {
-                    restore_curves(d.as_mut(), &cfg, &runtime.software);
+                    restore_curves(d.as_mut(), &runtime.model, &cfg, &runtime.software);
                 }
                 runtime.software.clear();
                 runtime.driver = None;
@@ -782,7 +794,7 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
         if let (Some(d), Some(cfg)) = (r.driver.as_mut(), configs.get(&r.found.id)) {
             // Speeds Lumora drove live can't follow anything once it's gone:
             // leave the liquid curves, which the cooler runs by itself.
-            restore_curves(d.as_mut(), cfg, &r.software);
+            restore_curves(d.as_mut(), &r.model, cfg, &r.software);
             if cfg.takeover && cfg.screen.shows_readings() {
                 let _ = d.set_screen(
                     &ScreenSettings {
@@ -796,10 +808,21 @@ fn run(shared: Arc<Shared>, mut backend: Box<dyn Backend>, owner_check: OwnerChe
     }
 }
 
-/// Puts the liquid curve back on channels Lumora was driving live.
-fn restore_curves(d: &mut dyn Driver, cfg: &CoolerConfig, software: &BTreeSet<String>) {
+/// Puts the liquid curve back on channels Lumora was driving live (or, on a
+/// device without curves, hands them back to its own control).
+fn restore_curves(
+    d: &mut dyn Driver,
+    model: &Model,
+    cfg: &CoolerConfig,
+    software: &BTreeSet<String>,
+) {
     for ch in software {
-        let _ = d.set_speed(ch, &cfg.speed(ch, "liquid"));
+        let back = if model.software_only() {
+            SpeedSetting::Auto
+        } else {
+            cfg.speed(ch, "liquid")
+        };
+        let _ = d.set_speed(ch, &back);
     }
 }
 
@@ -1125,6 +1148,34 @@ mod tests {
         wait("safe speed", || {
             fans.lock().unwrap().duties == [nzxt_fans::SAFE_DUTY; 3]
         });
+    }
+
+    #[test]
+    fn motherboard_headers_stay_with_the_bios_until_given_a_curve() {
+        let _one = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        static BOARD: super::super::board::BoardModel = super::super::board::BoardModel {
+            pid: 0x107,
+            name: "Motherboard fans (test)",
+            fans: 3,
+        };
+        let model = Model::Board(&BOARD);
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        let (want, live) = desired(&model, &cfg, None, &BTreeSet::new());
+        assert!(want.speeds.values().all(|s| *s == SpeedSetting::Auto));
+        assert!(live.is_empty());
+
+        temps::set("gpu", Some(65.0));
+        cfg.follow.insert("h2".into(), "gpu".into());
+        cfg.speeds.insert("h2@gpu".into(), SpeedSetting::default());
+        let (want, _) = desired(&model, &cfg, None, &BTreeSet::new());
+        assert_eq!(want.speeds["h1"], SpeedSetting::Auto);
+        assert_eq!(want.speeds["h2"], SpeedSetting::Fixed { duty: 60 });
+        temps::set("gpu", None);
+        let (want, _) = desired(&model, &cfg, None, &BTreeSet::new());
+        assert_eq!(want.speeds["h2"], SpeedSetting::Auto, "no reading: BIOS");
     }
 
     #[test]

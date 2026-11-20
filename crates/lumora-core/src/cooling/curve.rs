@@ -25,9 +25,18 @@ pub enum Preset {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum SpeedSetting {
-    Preset { preset: Preset },
-    Fixed { duty: u8 },
-    Custom { points: Curve },
+    Preset {
+        preset: Preset,
+    },
+    Fixed {
+        duty: u8,
+    },
+    Custom {
+        points: Curve,
+    },
+    /// The device's own control (a motherboard header's BIOS curve): Lumora
+    /// doesn't set this one. Devices that can't hand back run it as balanced.
+    Auto,
 }
 
 impl Default for SpeedSetting {
@@ -94,6 +103,7 @@ impl SpeedSetting {
             SpeedSetting::Preset { preset } => preset_curve_for(channel, *preset, source),
             SpeedSetting::Fixed { duty } => vec![(start, *duty), (end - 1, *duty)],
             SpeedSetting::Custom { points } => points.clone(),
+            SpeedSetting::Auto => preset_curve_for(channel, Preset::Balanced, source),
         }
     }
 
@@ -103,6 +113,7 @@ impl SpeedSetting {
             SpeedSetting::Preset { preset } => preset_curve(channel, *preset),
             SpeedSetting::Fixed { duty } => vec![(CURVE_START, *duty), (CURVE_END - 1, *duty)],
             SpeedSetting::Custom { points } => points.clone(),
+            SpeedSetting::Auto => preset_curve(channel, Preset::Balanced),
         }
     }
 }

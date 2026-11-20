@@ -35,10 +35,17 @@ function tableFor(ch, setting, src = 'liquid', min = ch === 'pump' ? 20 : 0) {
   const [t0, t1] = MOCK_RANGES[src];
   // Presets stretched over the reading's range (close enough for a preview).
   const stretch = (t) => Math.round(t0 + ((t - 20) / 39) * (t1 - t0) * (src === 'liquid' ? 1 : 0.95));
+  if (setting.mode === 'auto') setting = { mode: 'preset', preset: 'balanced' };
   const pts = setting.mode === 'preset' ? PRESET_POINTS[ch === 'pump' ? 'pump' : 'fan'][setting.preset].map(([t, d]) => [stretch(t), d])
     : setting.mode === 'fixed' ? [[t0, setting.duty], [t1 - 1, setting.duty]] : setting.points;
   return localTable(pts, min, [t0, t1]);
 }
+const board = {
+  id: 'board:5ca3:0107:0', name: 'Motherboard fans (NCT6798D)', vendor: 'Motherboard', kind: 'board', owner_app: null, owner_running: false,
+  takeover: location.search.includes('board'), state: 'idle', message: '', firmware: null, status: null, needs_setup: false, notice: '',
+  channels: Array.from({ length: 7 }, (_, i) => ({ id: `h${i + 1}`, name: `Header ${i + 1}`, min_duty: 20, kind: 'curve', follow: ['cpu'], setting: { mode: 'auto' } })),
+  screen: null, light: null,
+};
 const fanCtl = {
   id: 'hid:1e71:2019:FANS', name: 'RGB & Fan Controller', vendor: 'NZXT', kind: 'fans', owner_app: 'NZXT CAM', owner_running: false,
   takeover: location.search.includes('fans'), state: 'idle', message: '', firmware: '1.7.2', status: null, needs_setup: false, notice: '',
@@ -84,7 +91,7 @@ function fillCurves(k, saved = {}) {
     const key = (x) => (x === 'liquid' ? ch.id : `${ch.id}@${x}`);
     const prev = Object.fromEntries((ch.curves || []).map((cv) => [cv.source, cv.setting]));
     ch.curves = choices.map((src) => {
-      const setting = saved[key(src)] || prev[src] || (src === ch.follow[0] ? ch.setting : null) || { mode: 'preset', preset: 'balanced' };
+      const setting = saved[key(src)] || prev[src] || (src === ch.follow[0] ? ch.setting : null) || (k.kind === 'board' ? { mode: 'auto' } : { mode: 'preset', preset: 'balanced' });
       const table = tableFor(ch.id, setting, src, ch.min_duty);
       const [t0] = MOCK_RANGES[src];
       const reading = src === 'liquid' ? (k.takeover || k.kind === 'fans' ? liquid : null) : mockTemp(src);
@@ -156,7 +163,7 @@ const state = {
     preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
   ],
   active_profile: null,
-  coolers: [kraken, hydro, gpuCard, fanCtl],
+  coolers: [kraken, hydro, gpuCard, fanCtl, board],
   temps: [],
   launch_at_login: false,
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
@@ -226,6 +233,16 @@ setInterval(() => {
   } else {
     h.status = null;
   }
+  const bd = state.coolers[4];
+  bd.state = bd.takeover ? 'active' : 'idle';
+  if (bd.takeover) {
+    const on = [true, true, false, true, false, false, false];
+    const d = bd.channels.map((ch, i) => {
+      const cv = ch.curves?.find((x) => x.source === ch.follow[0]);
+      return !on[i] ? 0 : cv?.setting.mode === 'auto' ? 45 : cv?.duty ?? 45;
+    });
+    bd.status = { fan_duty: Math.round((d[0] + d[1] + d[3]) / 3), fan_rpms: d.map((v, i) => (on[i] ? Math.round(v * 14.5 + (i === 0 ? 300 : 0)) : 0)), fan_duties: d, fans_connected: on, fault: false };
+  } else bd.status = null;
   const fc = state.coolers[3];
   fc.state = fc.takeover ? 'active' : 'idle';
   if (fc.takeover) {

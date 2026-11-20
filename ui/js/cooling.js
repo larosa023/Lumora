@@ -25,8 +25,11 @@ function edited(c, ch) {
 const SOURCE_NAMES = { liquid: 'Liquid', gpu: 'GPU', cpu: 'CPU' };
 const isGpu = (c) => c.kind === 'gpu';
 const isFans = (c) => c.kind === 'fans';
-/** Fan pages: a graphics card or a case fan controller (no pump, no screen). */
-const fanOnly = (c) => isGpu(c) || isFans(c);
+const isBoard = (c) => c.kind === 'board';
+/** Fan headers, one card each: a case fan controller or the motherboard. */
+const headers = (c) => isFans(c) || isBoard(c);
+/** Fan pages: a graphics card, case fan controller or motherboard (no pump, no screen). */
+const fanOnly = (c) => isGpu(c) || headers(c);
 const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
 const SCREEN_MODES = [['temperature', 'Temperature'], ['liquid', 'NZXT built-in'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
 const PALETTE = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400', '#3ddc97'];
@@ -117,16 +120,16 @@ export function sidebarHtml() {
   const list = coolers();
   if (!list.length) return '';
   return '<div class="group-title">Cooler control</div>' + list.map((c) => {
-    const live = c.state === 'active' && (isFans(c) ? c.status?.fan_duty != null : mainTemp(c) != null);
+    const live = c.state === 'active' && (headers(c) ? c.status?.fan_duty != null : mainTemp(c) != null);
     const badge = live
-      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${isFans(c) ? `${fmt(c.status.fan_duty)}%` : `${fmt(mainTemp(c), isGpu(c) ? 0 : 1)}°`}</span>`
+      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${headers(c) ? `${fmt(c.status.fan_duty)}%` : `${fmt(mainTemp(c), isGpu(c) ? 0 : 1)}°`}</span>`
       : c.takeover && c.needs_restart
         ? '<span class="nav-badge muted">Restart</span>'
         : c.takeover && c.needs_setup
         ? '<span class="nav-badge muted">Setup</span>'
         : c.takeover
         ? '<span class="nav-badge muted">…</span>'
-        : `<span class="nav-badge muted">${ctx.esc(isGpu(c) ? 'Driver' : (c.owner_app || 'Off').replace(/^(NZXT|Corsair) /, ''))}</span>`;
+        : `<span class="nav-badge muted">${ctx.esc(isGpu(c) ? 'Driver' : isBoard(c) ? 'BIOS' : (c.owner_app || 'Off').replace(/^(NZXT|Corsair) /, ''))}</span>`;
     return `<button class="nav-item" data-device="cooler:${ctx.esc(c.id)}" aria-current="${ctx.state.selected === 'cooler:' + c.id}" title="${ctx.esc(c.vendor + ' ' + c.name)}">
       <span class="nav-icon">${ctx.icon('cooler')}</span>
       <span class="nav-name">${ctx.esc(c.name.replace(/ \(\d{4}\)$/, ''))}</span>${badge}
@@ -188,7 +191,7 @@ const parts = (c) => {
 // The speed case fans are left at when Lumora isn't driving them.
 const FAN_SAFE = 60;
 
-const setupCommand = (c) => (isGpu(c) ? 'setup_cpu_sensor' : 'setup_cooler_access');
+const setupCommand = (c) => (isGpu(c) || isBoard(c) ? 'setup_cpu_sensor' : 'setup_cooler_access');
 
 function askGpuTakeover(c) {
   const go = $('#coolerDialogGo');
@@ -236,8 +239,38 @@ function askFansTakeover(c) {
   };
 }
 
+function askBoardTakeover(c) {
+  const go = $('#coolerDialogGo');
+  $('#coolerDialogTitle').textContent = 'Let Lumora control your motherboard fans?';
+  $('#coolerDialogText').textContent = c.needs_setup
+    ? 'Motherboard fan headers can only be set with admin rights, so Lumora uses its small helper (the same one that reads the CPU temperature), the way LibreHardwareMonitor does. One Windows permission prompt sets it up or updates it.'
+    : 'Every header starts on "BIOS", so nothing changes until you pick a curve for one. Then Lumora sets that header live from the temperature you choose.';
+  $('#coolerDialogKeep').textContent = 'Turn off fan control in Armoury Crate / Fan Xpert (or any other fan tool) for the headers you give Lumora, or they\'ll fight. Whenever Lumora closes or you switch this off, every header goes straight back to its BIOS setting.';
+  go.textContent = c.needs_setup ? 'Set up and continue' : 'Let Lumora control them';
+  go.disabled = false;
+  $('#coolerDialog').showModal();
+  go.onclick = async () => {
+    if (c.needs_setup) {
+      go.disabled = true;
+      go.textContent = 'Setting up…';
+      try {
+        await ctx.api.invoke('setup_cpu_sensor');
+      } catch (err) {
+        go.disabled = false;
+        go.textContent = 'Try again';
+        $('#coolerDialogKeep').textContent = `Setup didn't finish: ${String(err)}`;
+        return;
+      }
+      ctx.toast('Helper ready. Your fan headers show up within a few seconds.');
+    }
+    $('#coolerDialog').close();
+    update(c, (x) => (x.takeover = true), { now: true });
+  };
+}
+
 function askTakeover(c) {
   if (isGpu(c)) return askGpuTakeover(c);
+  if (isBoard(c)) return askBoardTakeover(c);
   if (isFans(c)) return askFansTakeover(c);
   const app = c.owner_app || 'its own app';
   const go = $('#coolerDialogGo');
@@ -295,7 +328,9 @@ function gpuReadouts(c) {
 /** Case fan controller: one tile per fan port. */
 function fansReadouts(c) {
   const s = c.status || {};
+  const known = s.fans_connected?.some(Boolean);
   const tiles = c.channels.map((ch, i) => {
+    if (isBoard(c) && known && !s.fans_connected[i]) return '';
     const plugged = s.fans_connected?.[i];
     return `<div class="readout" data-readout="${ch.id}">
       <span class="readout-label">${ctx.esc(ch.name)}</span>
@@ -308,7 +343,7 @@ function fansReadouts(c) {
 
 function readouts(c) {
   if (isGpu(c)) return gpuReadouts(c);
-  if (isFans(c)) return fansReadouts(c);
+  if (headers(c)) return fansReadouts(c);
   const s = c.status || {};
   const stat = (key, label, value, unit, sub) => `<div class="readout" data-readout="${key}">
       <span class="readout-label">${label}</span>
@@ -414,7 +449,7 @@ function channelHtml(c, ch) {
       <p class="hint">This pump has three built-in speeds, and the cooler fine-tunes within each one by itself.</p>
     </section>`;
   }
-  const seg = [...PRESETS, ['fixed', 'Fixed'], ['custom', 'Custom']]
+  const seg = [...(isBoard(c) ? [['auto', 'BIOS']] : []), ...PRESETS, ['fixed', 'Fixed'], ['custom', 'Custom']]
     .map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
   const fixed = mode === 'fixed'
     ? `<div class="control fixed-row"><label class="control-label" for="fixed-${ch.id}"><span>Speed</span><output>${cv.setting.duty}%</output></label>
@@ -429,7 +464,15 @@ function channelHtml(c, ch) {
   const live = follow.some((s) => s !== 'liquid');
   const missing = follow.filter((s) => s !== 'liquid' && info(s).missing);
   let hint;
-  if (isFans(c)) {
+  if (isBoard(c)) {
+    const gone = follow.filter((s) => info(s).missing);
+    const label = (s) => (s === 'liquid' ? 'AIO liquid' : names[s]);
+    hint = mode === 'auto'
+      ? 'Your BIOS runs this header (its Q-Fan / Smart Fan setting), exactly as before. Pick a curve above to have Lumora set it instead.'
+      : gone.length === follow.length
+      ? `There's no ${gone.map(label).join(' or ')} reading right now${gone.includes('cpu') ? ' (CPU temperature needs its one-time setup)' : gone.includes('liquid') ? ' (the liquid comes from an AIO cooler Lumora runs)' : ''}, so the BIOS runs this header until one arrives.`
+      : `Lumora sets this header live from the ${follow.map(label).join(' and ')} temperature${follow.length > 1 ? 's, whichever curve asks for more' : ''}. Never below ${ch.min_duty}%. When Lumora closes, it goes straight back to your BIOS setting.`;
+  } else if (isFans(c)) {
     const gone = follow.filter((s) => info(s).missing);
     const label = (s) => (s === 'liquid' ? 'AIO liquid' : names[s]);
     hint = gone.length === follow.length
@@ -453,7 +496,7 @@ function channelHtml(c, ch) {
       : ch.id === 'pump' ? `Never below ${ch.min_duty}%, so the pump can't stall. 100% from 59 °C, always.` : 'Full speed from 59 °C, always.';
   }
   if (mode === 'custom') hint = 'Drag the points. ' + hint;
-  const followRow = isGpu(c) ? '' : `<div class="control follow-row">
+  const followRow = isGpu(c) || mode === 'auto' ? '' : `<div class="control follow-row">
       <div class="control-label"><span>Follows</span><small>pick one or more</small></div>
       <div class="segmented compact multi" role="group" aria-label="${ch.name} follows">${FOLLOW.map(([v, l]) => `<button data-follow="${ch.id}" data-v="${v}" aria-pressed="${follow.includes(v)}">${l}</button>`).join('')}</div>
     </div>`;
@@ -469,7 +512,7 @@ function channelHtml(c, ch) {
     ${followRow}
     ${tabs}
     ${fixed}
-    ${curveSvg(c, ch)}
+    ${mode === 'auto' ? '' : curveSvg(c, ch)}
     <p class="hint">${hint}</p>
   </section>`;
 }
@@ -664,10 +707,10 @@ function lightHtml(c) {
 }
 
 function setupHtml(c) {
-  if (isGpu(c)) {
+  if (isGpu(c) || isBoard(c)) {
     return `<div class="cool-page"><div class="hands-off static">
       <strong>${/older version/.test(c.message || '') ? 'Update Lumora\'s helper' : 'One-time setup needed'}</strong>
-      <span>${ctx.esc(c.message || 'Setting fan speeds needs Lumora\'s helper with admin rights.')} Until then the NVIDIA driver keeps running the fans.</span>
+      <span>${ctx.esc(c.message || 'Setting fan speeds needs Lumora\'s helper with admin rights.')} Until then ${isBoard(c) ? 'your BIOS' : 'the NVIDIA driver'} keeps running the fans.</span>
       <button class="btn primary" data-takeover="on">${/older version/.test(c.message || '') ? 'Update the helper' : 'Set up'}</button>
     </div></div>`;
   }
@@ -692,6 +735,14 @@ export function renderPage(c) {
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
       <strong>The NVIDIA driver runs these fans</strong>
       <span>Lumora isn't touching them, so they work exactly as they always have. Let Lumora control them to set your own fan curve on the GPU temperature. It's optional, and you can hand them back any time.</span>
+      <button class="btn primary" data-takeover="on">Let Lumora control the fans</button>
+    </div></div>`;
+    return;
+  }
+  if (!c.takeover && isBoard(c)) {
+    body.innerHTML = `<div class="cool-page"><div class="hands-off static">
+      <strong>Your BIOS runs these fan headers</strong>
+      <span>Lumora isn't touching them, so they follow your BIOS fan settings exactly as before. Let Lumora control them to give any header its own curve on the CPU, GPU or AIO liquid temperature (the way LibreHardwareMonitor does). Every header starts on "BIOS", so nothing changes until you pick a curve, and they all go back to the BIOS whenever Lumora closes.</span>
       <button class="btn primary" data-takeover="on">Let Lumora control the fans</button>
     </div></div>`;
     return;
@@ -744,8 +795,8 @@ export function renderPage(c) {
     ${banner}${notice}
     ${readouts(c)}
     ${tempChartHtml()}
-    <div class="cool-grid${isFans(c) ? ' even' : ''}">
-      ${isFans(c) ? fanColumns(c) : `<div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
+    <div class="cool-grid${headers(c) ? ' even' : ''}">
+      ${headers(c) ? fanColumns(c) : `<div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
       <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>`}
     </div>
   </div>`;  refreshTempChart(true);
@@ -773,7 +824,7 @@ export function refreshLive(c) {
   if (isGpu(c)) {
     set('gpu', fmt(tempOf(c, 'gpu')));
     set('fan', fmt(s.fan_duty));
-  } else if (isFans(c)) {
+  } else if (headers(c)) {
     c.channels.forEach((ch, i) => {
       if (s.fans_connected?.[i] !== false) set(ch.id, fmt(s.fan_rpms?.[i]), s.fan_duties?.[i] != null ? `${s.fan_duties[i]}% duty` : '');
     });
@@ -794,7 +845,7 @@ export function refreshLive(c) {
 export function refreshSidebarTemps() {
   for (const c of coolers()) {
     const el = document.querySelector(`[data-cooler-temp="${CSS.escape(c.id)}"]`);
-    if (el && isFans(c)) {
+    if (el && headers(c)) {
       if (c.status?.fan_duty != null) el.textContent = `${fmt(c.status.fan_duty)}%`;
       continue;
     }
@@ -855,6 +906,7 @@ function onClick(ev) {
     update(c, () => {
       if (v === 'fixed') cv.setting = { mode: 'fixed', duty: Math.max(ch.min_duty, cv.table[15]) };
       else if (v === 'custom') cv.setting = { mode: 'custom', points: seedPoints(cv) };
+      else if (v === 'auto') cv.setting = { mode: 'auto' };
       else cv.setting = { mode: 'preset', preset: v };
       if (ch.kind === 'modes') ch.setting = cv.setting;
     }, { now: true });

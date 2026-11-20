@@ -10,6 +10,7 @@
 //! family comes from the open research documented by the liquidctl project
 //! and the Linux `nzxt-kraken3` driver. The implementation here is Lumora's own.
 
+pub mod board;
 pub mod curve;
 pub mod fake;
 pub mod family;
@@ -318,10 +319,15 @@ impl CoolerConfig {
     }
 
     pub fn speed(&self, channel: &str, source: &str) -> SpeedSetting {
+        self.speed_or(channel, source, SpeedSetting::default())
+    }
+
+    /// [`Self::speed`], with `default` when nothing was chosen yet.
+    pub fn speed_or(&self, channel: &str, source: &str, default: SpeedSetting) -> SpeedSetting {
         self.speeds
             .get(&Self::speed_key(channel, source))
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or(default)
     }
 }
 

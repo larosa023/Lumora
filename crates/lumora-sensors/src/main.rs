@@ -19,6 +19,10 @@
 //! admins do that; see `lumora_core::cooling::gpu`), handing them back to the
 //! driver whenever Lumora goes quiet.
 //!
+//! It also sets motherboard fan header speeds for Lumora, through PawnIO's
+//! signed `LpcIO` module (see `lumora_core::cooling::board`), and hands every
+//! header back to the BIOS whenever Lumora goes quiet.
+//!
 //! It also relays Corsair Hydro Pro coolers for Lumora on `127.0.0.1:6745`
 //! (see `lumora_core::cooling::relay`): the UsbDk driver those coolers need
 //! only answers programs with admin rights. The relay only signs in Lumora
@@ -130,6 +134,33 @@ mod win {
                 }
                 Ok(PawnIo { lib, handle })
             }
+        }
+
+        /// Runs a module function that may return nothing (`want` = 0).
+        fn exec(&self, name: &str, input: &[u64], want: usize) -> Result<u64, String> {
+            let cname = CString::new(name).map_err(|e| e.to_string())?;
+            let mut out = [0u64; 1];
+            let mut got = 0usize;
+            // SAFETY: see `open`; buffers are sized as passed.
+            let hr = unsafe {
+                let exec: Symbol<Execute> = self
+                    .lib
+                    .get(b"pawnio_execute\0")
+                    .map_err(|e| e.to_string())?;
+                exec(
+                    self.handle,
+                    cname.as_ptr(),
+                    input.as_ptr(),
+                    input.len(),
+                    out.as_mut_ptr(),
+                    want,
+                    &mut got,
+                )
+            };
+            if hr < 0 || got < want {
+                return Err(format!("{name} failed (0x{hr:08x})"));
+            }
+            Ok(out[0])
         }
 
         fn call(&self, name: &str, input: &[u64]) -> Result<u64, String> {
@@ -245,6 +276,86 @@ mod win {
         }
     }
 
+    /// The motherboard's Super I/O chip through PawnIO's `LpcIO` module,
+    /// under the ISA-bus lock other monitoring tools share.
+    struct Lpc {
+        io: PawnIo,
+        isa: HANDLE,
+        locked: bool,
+    }
+
+    unsafe impl Send for Lpc {}
+
+    impl Lpc {
+        fn open() -> Result<Lpc, String> {
+            let dir = std::env::current_exe()
+                .map_err(|e| e.to_string())?
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_default();
+            let module = std::fs::read(dir.join("LpcIO.bin"))
+                .map_err(|e| format!("LpcIO.bin is missing ({e})"))?;
+            let io = PawnIo::open(&module)?;
+            let name: Vec<u16> = "Global\\Access_ISABUS.HTP.Method\0"
+                .encode_utf16()
+                .collect();
+            // SAFETY: creating (or opening) a named mutex.
+            let isa = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+            Ok(Lpc {
+                io,
+                isa,
+                locked: false,
+            })
+        }
+    }
+
+    impl lumora_core::cooling::board::SuperIo for Lpc {
+        fn select_slot(&mut self, slot: u8) -> Result<(), String> {
+            self.io
+                .exec("ioctl_select_slot", &[slot as u64], 0)
+                .map(|_| ())
+        }
+        fn find_bars(&mut self) -> Result<(), String> {
+            self.io.exec("ioctl_find_bars", &[], 0).map(|_| ())
+        }
+        fn inb(&mut self, port: u16) -> Result<u8, String> {
+            self.io
+                .exec("ioctl_pio_inb", &[port as u64], 1)
+                .map(|v| v as u8)
+        }
+        fn outb(&mut self, port: u16, value: u8) -> Result<(), String> {
+            self.io
+                .exec("ioctl_pio_outb", &[port as u64, value as u64], 0)
+                .map(|_| ())
+        }
+        fn sio_inb(&mut self, reg: u8) -> Result<u8, String> {
+            self.io
+                .exec("ioctl_superio_inb", &[reg as u64], 1)
+                .map(|v| v as u8)
+        }
+        fn sio_outb(&mut self, reg: u8, value: u8) -> Result<(), String> {
+            self.io
+                .exec("ioctl_superio_outb", &[reg as u64, value as u64], 0)
+                .map(|_| ())
+        }
+        fn lock(&mut self) -> bool {
+            if self.isa.is_null() {
+                return true;
+            }
+            // SAFETY: waiting on our own mutex handle.
+            let w = unsafe { WaitForSingleObject(self.isa, 200) };
+            self.locked = w == WAIT_OBJECT_0 || w == WAIT_ABANDONED;
+            self.locked
+        }
+        fn unlock(&mut self) {
+            if self.locked {
+                // SAFETY: releasing the mutex this thread holds.
+                unsafe { ReleaseMutex(self.isa) };
+                self.locked = false;
+            }
+        }
+    }
+
     pub fn main() {
         // One copy at a time: a second one can't take the port and leaves.
         let Ok(listener) = TcpListener::bind(("127.0.0.1", super::PORT)) else {
@@ -254,6 +365,11 @@ mod win {
         // The cooler relay, beside the temperature.
         // Graphics card fans go back to the driver whenever Lumora goes quiet.
         lumora_core::cooling::gpu::start_watchdog();
+        // Motherboard fan headers too, through PawnIO's LpcIO module.
+        lumora_core::cooling::board::set_provider(Box::new(|| {
+            Lpc::open().map(|l| Box::new(l) as Box<dyn lumora_core::cooling::board::SuperIo>)
+        }));
+        lumora_core::cooling::board::start_watchdog();
         if let Some(key_file) = lumora_core::cooling::relay::default_key_file() {
             std::thread::spawn(move || {
                 let backend = lumora_core::cooling::usb::UsbBackend::new(None);

@@ -4,6 +4,7 @@ use std::io;
 
 use serde::Serialize;
 
+use super::board::{self, BoardFans, BoardModel};
 use super::curve::SpeedSetting;
 use super::gpu::{self, GpuFans, GpuModel};
 use super::hydro::{self, HydroModel, HydroPro};
@@ -38,6 +39,8 @@ pub enum Model {
     Gpu(&'static GpuModel),
     /// A case fan controller (no pump, no curves of its own).
     Fans(&'static FanControllerModel),
+    /// The motherboard's own fan headers.
+    Board(&'static BoardModel),
 }
 
 impl Model {
@@ -48,6 +51,7 @@ impl Model {
                 .or_else(|| nzxt_fans::model(pid).map(Model::Fans)),
             hydro::CORSAIR_VID => hydro::model(pid).map(Model::Hydro),
             gpu::NVIDIA_VID => gpu::model(pid).map(Model::Gpu),
+            board::BOARD_VID => board::model(pid).map(Model::Board),
             _ => None,
         }
     }
@@ -58,6 +62,7 @@ impl Model {
             Model::Hydro(m) => m.name,
             Model::Gpu(m) => m.name,
             Model::Fans(m) => m.name,
+            Model::Board(m) => m.name,
         }
     }
 
@@ -67,6 +72,7 @@ impl Model {
             Model::Hydro(_) => "Corsair",
             Model::Gpu(_) => "NVIDIA",
             Model::Fans(_) => "NZXT",
+            Model::Board(_) => "Motherboard",
         }
     }
 
@@ -103,6 +109,14 @@ impl Model {
                     kind: ChannelKind::Curve,
                 })
                 .collect(),
+            Model::Board(m) => (0..m.fans.min(7) as usize)
+                .map(|i| ChannelSpec {
+                    id: board::CHANNELS[i],
+                    name: board::CHANNEL_NAMES[i],
+                    min_duty: board::MIN_DUTY,
+                    kind: ChannelKind::Curve,
+                })
+                .collect(),
             Model::Hydro(_) => vec![
                 ChannelSpec {
                     id: "pump",
@@ -124,13 +138,22 @@ impl Model {
     pub fn screen(&self) -> Option<(u16, u16)> {
         match self {
             Model::Kraken(m) => m.lcd,
-            Model::Hydro(_) | Model::Gpu(_) | Model::Fans(_) => None,
+            Model::Hydro(_) | Model::Gpu(_) | Model::Fans(_) | Model::Board(_) => None,
         }
     }
 
     /// The device stores no curves, so Lumora drives every speed live.
     pub fn software_only(&self) -> bool {
-        matches!(self, Model::Gpu(_) | Model::Fans(_))
+        matches!(self, Model::Gpu(_) | Model::Fans(_) | Model::Board(_))
+    }
+
+    /// What a channel does before anything is chosen: motherboard headers
+    /// stay with the BIOS.
+    pub fn default_setting(&self) -> SpeedSetting {
+        match self {
+            Model::Board(_) => SpeedSetting::Auto,
+            _ => SpeedSetting::default(),
+        }
     }
 
     /// "aio", "gpu" or "fans", for the page.
@@ -138,6 +161,7 @@ impl Model {
         match self {
             Model::Gpu(_) => "gpu",
             Model::Fans(_) => "fans",
+            Model::Board(_) => "board",
             _ => "aio",
         }
     }
@@ -162,7 +186,7 @@ impl Model {
         match self {
             Model::Kraken(_) => 0,
             Model::Hydro(m) => m.fans,
-            Model::Gpu(_) | Model::Fans(_) => 0,
+            Model::Gpu(_) | Model::Fans(_) | Model::Board(_) => 0,
         }
     }
 
@@ -172,6 +196,7 @@ impl Model {
             Model::Hydro(m) => Box::new(HydroPro::new(link, m)),
             Model::Gpu(m) => Box::new(GpuFans::new(link, m)),
             Model::Fans(m) => Box::new(FanController::new(link, m)),
+            Model::Board(m) => Box::new(BoardFans::new(link, m)),
         }
     }
 }
