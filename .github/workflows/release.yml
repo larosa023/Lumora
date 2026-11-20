@@ -99,5 +99,21 @@ jobs:
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $engine = (Get-Content src-tauri/engine/VERSION).Split('-')[0]
-          Invoke-WebRequest -Uri "https://codeberg.org/OpenRGB/OpenRGB/archive/release_$engine.tar.gz" -OutFile "OpenRGB-$engine-source.tar.gz"
-          gh release upload "v$version" "OpenRGB-$engine-source.tar.gz" --clobber
+          $file = "OpenRGB-$engine-source.tar.gz"
+          # Codeberg is often slow; fall back to the same archive on an earlier release.
+          try {
+            Invoke-WebRequest -Uri "https://codeberg.org/OpenRGB/OpenRGB/archive/release_$engine.tar.gz" -OutFile $file -TimeoutSec 180
+          } catch {
+            Write-Host "Codeberg didn't answer ($_); copying the archive from an earlier release"
+            $tags = gh release list --limit 20 --json tagName -q '.[].tagName'
+            foreach ($t in $tags) {
+              if ($t -eq "v$version") { continue }
+              gh release download $t -p $file --clobber 2>$null
+              if (Test-Path $file) { break }
+            }
+          }
+          if (Test-Path $file) {
+            gh release upload "v$version" $file --clobber
+          } else {
+            Write-Warning "OpenRGB source archive not attached this time"
+          }
