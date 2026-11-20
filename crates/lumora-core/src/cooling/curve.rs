@@ -37,6 +37,43 @@ pub enum SpeedSetting {
     /// The device's own control (a motherboard header's BIOS curve): Lumora
     /// doesn't set this one. Devices that can't hand back run it as balanced.
     Auto,
+    /// For pumps that only have modes: quiet below `balanced` °C, balanced
+    /// from there, performance from `performance` °C. Lumora switches live.
+    Steps {
+        balanced: u8,
+        performance: u8,
+    },
+}
+
+/// Duties standing for the three pump modes in a live [`SpeedSetting::Steps`]
+/// (the Hydro driver maps duty back to a mode).
+pub const STEP_QUIET: u8 = 30;
+pub const STEP_BALANCED: u8 = 65;
+pub const STEP_PERFORMANCE: u8 = 100;
+
+/// The mode duty a [`SpeedSetting::Steps`] asks for at `celsius`.
+pub fn step_duty(balanced: u8, performance: u8, celsius: f32) -> u8 {
+    let perf = performance.max(balanced.saturating_add(1)) as f32;
+    if celsius >= perf {
+        STEP_PERFORMANCE
+    } else if celsius >= balanced as f32 {
+        STEP_BALANCED
+    } else {
+        STEP_QUIET
+    }
+}
+
+/// The staircase a [`SpeedSetting::Steps`] draws, for the chart.
+fn step_points(balanced: u8, performance: u8, start: u8, end: u8) -> Curve {
+    let b = balanced.clamp(start + 1, end - 2);
+    let p = performance.clamp(b + 1, end - 1);
+    vec![
+        (start, STEP_QUIET),
+        (b - 1, STEP_QUIET),
+        (b, STEP_BALANCED),
+        (p - 1, STEP_BALANCED),
+        (p, STEP_PERFORMANCE),
+    ]
 }
 
 impl Default for SpeedSetting {
@@ -104,6 +141,10 @@ impl SpeedSetting {
             SpeedSetting::Fixed { duty } => vec![(start, *duty), (end - 1, *duty)],
             SpeedSetting::Custom { points } => points.clone(),
             SpeedSetting::Auto => preset_curve_for(channel, Preset::Balanced, source),
+            SpeedSetting::Steps {
+                balanced,
+                performance,
+            } => step_points(*balanced, *performance, start, end),
         }
     }
 
@@ -114,6 +155,10 @@ impl SpeedSetting {
             SpeedSetting::Fixed { duty } => vec![(CURVE_START, *duty), (CURVE_END - 1, *duty)],
             SpeedSetting::Custom { points } => points.clone(),
             SpeedSetting::Auto => preset_curve(channel, Preset::Balanced),
+            SpeedSetting::Steps {
+                balanced,
+                performance,
+            } => step_points(*balanced, *performance, CURVE_START, CRITICAL),
         }
     }
 }
@@ -195,6 +240,13 @@ pub fn duty_at(
     source: &str,
     celsius: f32,
 ) -> u8 {
+    if let SpeedSetting::Steps {
+        balanced,
+        performance,
+    } = setting
+    {
+        return step_duty(*balanced, *performance, celsius);
+    }
     let (_, end) = range(source);
     let norm = normalize_to(&setting.points_for(channel, source), end);
     // The exact reading, not rounded to a degree: on a steep curve a reading
@@ -225,6 +277,22 @@ pub fn interpolate_f(points: &[(u8, u8)], temp: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn steps_switch_modes_at_their_temperatures() {
+        let s = SpeedSetting::Steps {
+            balanced: 35,
+            performance: 42,
+        };
+        assert_eq!(duty_at(&s, "pump", 0, "liquid", 34.9), STEP_QUIET);
+        assert_eq!(duty_at(&s, "pump", 0, "liquid", 35.0), STEP_BALANCED);
+        assert_eq!(duty_at(&s, "pump", 0, "liquid", 42.2), STEP_PERFORMANCE);
+        let t = table_for(&s, "pump", 0, "liquid");
+        assert_eq!(
+            (t[14], t[15], t[22]),
+            (STEP_QUIET, STEP_BALANCED, STEP_PERFORMANCE)
+        );
+    }
+
     #[test]
     fn steep_curves_are_read_at_the_exact_temperature() {
         let s = SpeedSetting::Custom {

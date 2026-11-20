@@ -95,7 +95,8 @@ pub fn pump_mode(setting: &SpeedSetting) -> u8 {
         SpeedSetting::Fixed { duty } if *duty < 50 => 0,
         SpeedSetting::Fixed { duty } if *duty < 80 => 1,
         SpeedSetting::Fixed { .. } => 2,
-        SpeedSetting::Custom { .. } | SpeedSetting::Auto => 1,
+        // Not driven live right now (Lumora closed): balanced.
+        SpeedSetting::Custom { .. } | SpeedSetting::Auto | SpeedSetting::Steps { .. } => 1,
     }
 }
 

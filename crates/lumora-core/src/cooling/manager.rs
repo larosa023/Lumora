@@ -309,6 +309,44 @@ fn desired(
             if srcs.is_empty() {
                 return Some((id, SpeedSetting::Auto));
             }
+            // A pump with modes only: a preset goes straight to the cooler;
+            // "by temperature" picks the mode live.
+            if ch.kind == ChannelKind::Modes {
+                let stepped: Vec<&str> = srcs
+                    .iter()
+                    .copied()
+                    .filter(|s| matches!(speed(ch.id, s), SpeedSetting::Steps { .. }))
+                    .collect();
+                if stepped.is_empty() {
+                    return Some((id, speed(ch.id, srcs[0])));
+                }
+                let at = |offset: f32| {
+                    stepped
+                        .iter()
+                        .filter_map(|s| {
+                            let t = if curve::is_liquid(s) {
+                                liquid
+                            } else {
+                                temps::get(s)
+                            }?;
+                            Some(curve::duty_at(&speed(ch.id, s), ch.id, 0, s, t + offset))
+                        })
+                        .max()
+                };
+                return Some(match (at(0.0), at(DOWN_BAND)) {
+                    (Some(duty), Some(floor)) => {
+                        live.insert(id.clone(), floor);
+                        (id, SpeedSetting::Fixed { duty })
+                    }
+                    // No reading yet: balanced until one arrives.
+                    _ => (
+                        id,
+                        SpeedSetting::Preset {
+                            preset: curve::Preset::Balanced,
+                        },
+                    ),
+                });
+            }
             // Live as soon as one followed reading isn't the liquid (which
             // the cooler can follow by itself) and Lumora has it.
             // A device without curves of its own follows the liquid live too.
@@ -366,10 +404,8 @@ fn sources_of(model: &Model, ch: &ChannelSpec, cfg: &CoolerConfig) -> Vec<&'stat
     } else if matches!(model, Model::Board(_)) && !cfg.follow.contains_key(ch.id) {
         // Motherboard headers follow the CPU until told otherwise.
         vec!["cpu"]
-    } else if ch.kind == ChannelKind::Curve {
-        cfg.sources(ch.id)
     } else {
-        vec!["liquid"]
+        cfg.sources(ch.id)
     }
 }
 
@@ -377,10 +413,8 @@ fn sources_of(model: &Model, ch: &ChannelSpec, cfg: &CoolerConfig) -> Vec<&'stat
 fn choices(model: &Model, ch: &ChannelSpec) -> Vec<&'static str> {
     if let Some(f) = model.fixed_source() {
         vec![f]
-    } else if ch.kind == ChannelKind::Curve {
-        vec!["liquid", "gpu", "cpu"]
     } else {
-        vec!["liquid"]
+        vec!["liquid", "gpu", "cpu"]
     }
 }
 
@@ -430,11 +464,12 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                     .into_iter()
                     .map(|ch| {
                         let follow = sources_of(&r.model, &ch, &cfg);
-                        let liquid = r
-                            .status
-                            .as_ref()
-                            .and_then(|st| st.liquid_c)
-                            .or_else(|| temps::get("liquid"));
+                        let own = r.status.as_ref().and_then(|st| st.liquid_c);
+                        let liquid = if r.model.software_only() {
+                            own.or_else(|| temps::get("liquid"))
+                        } else {
+                            own
+                        };
                         let curves: Vec<CurveView> = choices(&r.model, &ch)
                             .into_iter()
                             .map(|s| {
@@ -533,12 +568,14 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
         }
     }
 
-    // A fan controller has no liquid of its own: it follows the AIO's.
-    let liquid_now = r
-        .status
-        .as_ref()
-        .and_then(|st| st.liquid_c)
-        .or_else(|| temps::get("liquid"));
+    // A fan controller or motherboard has no liquid of its own: it follows
+    // the AIO's. A cooler only ever uses its own.
+    let own = r.status.as_ref().and_then(|st| st.liquid_c);
+    let liquid_now = if r.model.software_only() {
+        own.or_else(|| temps::get("liquid"))
+    } else {
+        own
+    };
     let (mut want, live_speeds) = desired(&r.model, cfg, liquid_now, &r.software);
     // Live duties only move in steps, and only come down once the reading has
     // really dropped, so the fans don't hunt.
@@ -857,7 +894,8 @@ mod tests {
     use super::super::LightSpeed;
     use super::*;
 
-    /// Tests that feed a GPU reading run one at a time.
+    /// Tests that feed a shared reading (GPU, or a liquid other tests may
+    /// pick up) run one at a time.
     static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn wait(what: &str, mut f: impl FnMut() -> bool) {
@@ -1176,6 +1214,40 @@ mod tests {
         temps::set("gpu", None);
         let (want, _) = desired(&model, &cfg, None, &BTreeSet::new());
         assert_eq!(want.speeds["h2"], SpeedSetting::Auto, "no reading: BIOS");
+    }
+
+    #[test]
+    fn hydro_pump_switches_modes_by_temperature() {
+        // Its liquid reading is shared, like the GPU's.
+        let _one = GPU_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (backend, dev) = FakeBackend::with_hydro(0x0C13);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 1);
+        let id = m.views()[0].id.clone();
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        // Fake liquid 31.7 °C: below 33, quiet.
+        cfg.speeds.insert(
+            "pump".into(),
+            SpeedSetting::Steps {
+                balanced: 33,
+                performance: 40,
+            },
+        );
+        m.set_config(&id, cfg.clone());
+        wait("quiet", || dev.lock().unwrap().pump_mode == 0);
+        dev.lock().unwrap().liquid_c = 36.0;
+        wait("balanced", || dev.lock().unwrap().pump_mode == 1);
+        dev.lock().unwrap().liquid_c = 41.0;
+        wait("performance", || dev.lock().unwrap().pump_mode == 2);
+        // Half a degree under the switch point isn't enough to drop back.
+        dev.lock().unwrap().liquid_c = 39.5;
+        thread::sleep(Duration::from_millis(2500));
+        assert_eq!(dev.lock().unwrap().pump_mode, 2, "held");
+        dev.lock().unwrap().liquid_c = 38.5;
+        wait("back to balanced", || dev.lock().unwrap().pump_mode == 1);
     }
 
     #[test]

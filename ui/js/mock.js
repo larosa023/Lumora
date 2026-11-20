@@ -36,6 +36,10 @@ function tableFor(ch, setting, src = 'liquid', min = ch === 'pump' ? 20 : 0) {
   // Presets stretched over the reading's range (close enough for a preview).
   const stretch = (t) => Math.round(t0 + ((t - 20) / 39) * (t1 - t0) * (src === 'liquid' ? 1 : 0.95));
   if (setting.mode === 'auto') setting = { mode: 'preset', preset: 'balanced' };
+  if (setting.mode === 'steps') {
+    const b = setting.balanced, p = setting.performance;
+    return Array.from({ length: t1 - t0 + 1 }, (_, i) => (t0 + i >= p ? 100 : t0 + i >= b ? 65 : 30));
+  }
   const pts = setting.mode === 'preset' ? PRESET_POINTS[ch === 'pump' ? 'pump' : 'fan'][setting.preset].map(([t, d]) => [stretch(t), d])
     : setting.mode === 'fixed' ? [[t0, setting.duty], [t1 - 1, setting.duty]] : setting.points;
   return localTable(pts, min, [t0, t1]);

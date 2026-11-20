@@ -438,17 +438,59 @@ function speedsHtml(c) {
   </section>`;
 }
 
+// Where "by temperature" switches a pump's modes, by followed temperature.
+const STEP_DEFAULTS = { liquid: [35, 42], gpu: [60, 75], cpu: [65, 80] };
+
+/** A pump with three built-in modes: pick one, or switch by temperature. */
+function modesHtml(c, ch, cv, active) {
+  const seg = [...PRESETS, ['steps', 'By temp']]
+    .map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
+  if (cv.setting.mode !== 'steps') {
+    return `<section class="cool-card">
+      <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
+      <p class="hint">This pump has three built-in speeds, and the cooler fine-tunes within each one by itself. Choose "By temp" to have Lumora switch between them as things warm up.</p>
+    </section>`;
+  }
+  const follow = followOf(ch);
+  const src = cv.source || 'liquid';
+  const [lo, hi] = rangeOf(cv);
+  const { balanced, performance } = cv.setting;
+  const info = (s) => (ch.curves || []).find((x) => x.source === s) || {};
+  const label = (s) => ({ liquid: 'liquid', gpu: 'GPU', cpu: 'CPU' }[s]);
+  const modeName = (d) => (d == null ? null : d >= 80 ? 'Performance' : d >= 50 ? 'Balanced' : 'Silent');
+  const asks = follow.map((s) => [s, info(s).duty]).filter(([, d]) => d != null);
+  const now = asks.length ? modeName(Math.max(...asks.map(([, d]) => d))) : null;
+  const slider = (which, value, min, max, text) => `<div class="control fixed-row">
+      <label class="control-label" for="steps-${ch.id}-${which}"><span>${text}</span><output>${value} °C</output></label>
+      <input type="range" id="steps-${ch.id}-${which}" data-steps="${ch.id}" data-which="${which}" min="${min}" max="${max}" value="${value}" style="--p:${((value - min) / (max - min)) * 100}%"></div>`;
+  const followRow = `<div class="control follow-row">
+      <div class="control-label"><span>Follows</span><small>pick one or more</small></div>
+      <div class="segmented compact multi" role="group" aria-label="${ch.name} follows">${FOLLOW.map(([v, l]) => `<button data-follow="${ch.id}" data-v="${v}" aria-pressed="${follow.includes(v)}">${l}</button>`).join('')}</div>
+    </div>`;
+  const tabs = follow.length > 1 ? `<div class="control follow-row">
+      <div class="control-label"><span>Editing</span></div>
+      <div class="segmented compact" role="radiogroup" aria-label="Which temperature to edit">${follow.map((s) => `<button role="radio" data-edit-curve="${ch.id}" data-v="${s}" aria-checked="${s === src}">${SOURCE_NAMES[s]}</button>`).join('')}</div>
+    </div>` : '';
+  const missing = follow.every((s) => info(s).missing);
+  const hint = missing
+    ? `There's no ${follow.map(label).join(' or ')} reading right now, so the pump stays on Balanced until one arrives.`
+    : `Silent below ${balanced} °C, Balanced from ${balanced} °C, Performance from ${performance} °C${follow.length > 1 ? ' (on whichever temperature asks for more)' : ` ${label(src)}`}. ${now ? `Right now: ${now}. ` : ''}It only drops back a mode once the temperature is a full degree below the switch point. Lumora switches the modes, so this works while Lumora runs; when it closes the pump stays on Balanced.`;
+  return `<section class="cool-card">
+    <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
+    ${followRow}
+    ${tabs}
+    ${slider('balanced', balanced, lo + 1, hi - 2, 'Balanced from')}
+    ${slider('performance', performance, lo + 2, hi - 1, 'Performance from')}
+    ${curveSvg(c, ch)}
+    <p class="hint">${hint}</p>
+  </section>`;
+}
+
 function channelHtml(c, ch) {
   const cv = edited(c, ch);
   const mode = cv.setting.mode;
   const active = mode === 'preset' ? cv.setting.preset : mode;
-  if (ch.kind === 'modes') {
-    const seg = PRESETS.map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
-    return `<section class="cool-card">
-      <header><h3>${ch.name}</h3><div class="segmented compact" role="radiogroup" aria-label="${ch.name} speed">${seg}</div></header>
-      <p class="hint">This pump has three built-in speeds, and the cooler fine-tunes within each one by itself.</p>
-    </section>`;
-  }
+  if (ch.kind === 'modes') return modesHtml(c, ch, cv, active);
   const seg = [...(isBoard(c) ? [['auto', 'BIOS']] : []), ...PRESETS, ['fixed', 'Fixed'], ['custom', 'Custom']]
     .map(([v, l]) => `<button role="radio" data-speed="${ch.id}" data-v="${v}" aria-checked="${active === v}">${l}</button>`).join('');
   const fixed = mode === 'fixed'
@@ -886,8 +928,14 @@ function onClick(ev) {
     const on = now.includes(v);
     // At least one temperature stays picked.
     if (on && now.length === 1) return ctx.toast('A curve needs at least one temperature to follow.');
+    const before = edited(c, ch);
     update(c, () => {
       ch.follow = ['liquid', 'gpu', 'cpu'].filter((s) => (s === v ? !on : now.includes(s)));
+      const added = !on && ch.kind === 'modes' && (ch.curves || []).find((x) => x.source === v);
+      if (added && before.setting.mode === 'steps' && added.setting.mode !== 'steps') {
+        const [b, p] = STEP_DEFAULTS[v];
+        added.setting = { mode: 'steps', balanced: b, performance: p };
+      }
     }, { now: true });
     if (!on) editing.set(`${c.id}/${ch.id}`, v);
     if (!on && v === 'cpu' && cpu.state !== 'ok') ctx.toast(cpuHint());
@@ -907,6 +955,10 @@ function onClick(ev) {
       if (v === 'fixed') cv.setting = { mode: 'fixed', duty: Math.max(ch.min_duty, cv.table[15]) };
       else if (v === 'custom') cv.setting = { mode: 'custom', points: seedPoints(cv) };
       else if (v === 'auto') cv.setting = { mode: 'auto' };
+      else if (v === 'steps') {
+        const [b, p] = STEP_DEFAULTS[cv.source] || STEP_DEFAULTS.liquid;
+        cv.setting = { mode: 'steps', balanced: b, performance: p };
+      }
       else cv.setting = { mode: 'preset', preset: v };
       if (ch.kind === 'modes') ch.setting = cv.setting;
     }, { now: true });
@@ -1023,7 +1075,21 @@ function onInput(ev) {
   const c = selectedCooler();
   if (!c) return;
   const t = ev.target;
-  if (t.dataset.fixed) {
+  if (t.dataset.steps) {
+    const ch = c.channels.find((x) => x.id === t.dataset.steps);
+    const cv = edited(c, ch);
+    const next = { ...cv.setting, [t.dataset.which]: +t.value };
+    if (t.dataset.which === 'balanced' && next.performance <= next.balanced) next.performance = next.balanced + 1;
+    if (t.dataset.which === 'performance' && next.balanced >= next.performance) next.balanced = next.performance - 1;
+    const card = t.closest('.cool-card');
+    for (const w of ['balanced', 'performance']) {
+      const el = card.querySelector(`[data-which="${w}"]`);
+      el.value = next[w];
+      el.style.setProperty('--p', `${((next[w] - +el.min) / (+el.max - +el.min)) * 100}%`);
+      el.closest('.control').querySelector('output').textContent = `${next[w]} °C`;
+    }
+    update(c, () => (cv.setting = next), { wait: 500 });
+  } else if (t.dataset.fixed) {
     const ch = c.channels.find((x) => x.id === t.dataset.fixed);
     t.style.setProperty('--p', `${t.value}%`);
     t.closest('.control').querySelector('output').textContent = `${t.value}%`;
