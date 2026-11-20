@@ -2375,3 +2375,9 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
 .tc-tip i { width: 8px; height: 8px; border-radius: 50%; }
 .tc-tip b { margin-left: auto; padding-left: 10px; color: var(--text); font-variant-numeric: tabular-nums; }
 .temp-empty { display: grid; place-items: center; height: 190px; color: #8f8ca6; font-size: 13px; }
+
+/* Case fan controller: fan cards side by side, equal widths. */
+.cool-grid.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 1100px) {
+  .cool-grid.even { grid-template-columns: 1fr; }
+}

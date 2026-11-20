@@ -56,7 +56,11 @@ impl Backend for HidBackend {
         let _ = api.refresh_devices();
         let mut seen = HashSet::new();
         api.device_list()
-            .filter(|d| d.vendor_id() == NZXT_VID && kraken::model(d.product_id()).is_some())
+            .filter(|d| {
+                d.vendor_id() == NZXT_VID
+                    && (kraken::model(d.product_id()).is_some()
+                        || super::nzxt_fans::model(d.product_id()).is_some())
+            })
             .filter_map(|d| {
                 let serial = d.serial_number().unwrap_or("").to_string();
                 let id = format!(

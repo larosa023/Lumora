@@ -35,10 +35,16 @@ function tableFor(ch, setting, src = 'liquid', min = ch === 'pump' ? 20 : 0) {
   const [t0, t1] = MOCK_RANGES[src];
   // Presets stretched over the reading's range (close enough for a preview).
   const stretch = (t) => Math.round(t0 + ((t - 20) / 39) * (t1 - t0) * (src === 'liquid' ? 1 : 0.95));
-  const pts = setting.mode === 'preset' ? PRESET_POINTS[ch][setting.preset].map(([t, d]) => [stretch(t), d])
+  const pts = setting.mode === 'preset' ? PRESET_POINTS[ch === 'pump' ? 'pump' : 'fan'][setting.preset].map(([t, d]) => [stretch(t), d])
     : setting.mode === 'fixed' ? [[t0, setting.duty], [t1 - 1, setting.duty]] : setting.points;
   return localTable(pts, min, [t0, t1]);
 }
+const fanCtl = {
+  id: 'hid:1e71:2019:FANS', name: 'RGB & Fan Controller', vendor: 'NZXT', kind: 'fans', owner_app: 'NZXT CAM', owner_running: false,
+  takeover: location.search.includes('fans'), state: 'idle', message: '', firmware: '1.7.2', status: null, needs_setup: false, notice: '',
+  channels: ['Fan 1', 'Fan 2', 'Fan 3'].map((name, i) => ({ id: `fan${i + 1}`, name, min_duty: 20, kind: 'curve', follow: ['liquid'], setting: { mode: 'preset', preset: 'balanced' } })),
+  screen: null, light: null,
+};
 const gpuCard = {
   id: 'gpu:10de:2684:0', name: 'GeForce RTX 4090', vendor: 'NVIDIA', kind: 'gpu', owner_app: null, owner_running: false,
   takeover: location.search.includes('gpu'), state: 'idle', message: '', firmware: null, status: null,
@@ -81,7 +87,7 @@ function fillCurves(k, saved = {}) {
       const setting = saved[key(src)] || prev[src] || (src === ch.follow[0] ? ch.setting : null) || { mode: 'preset', preset: 'balanced' };
       const table = tableFor(ch.id, setting, src, ch.min_duty);
       const [t0] = MOCK_RANGES[src];
-      const reading = src === 'liquid' ? (k.takeover ? liquid : null) : mockTemp(src);
+      const reading = src === 'liquid' ? (k.takeover || k.kind === 'fans' ? liquid : null) : mockTemp(src);
       return { source: src, setting, table, range: MOCK_RANGES[src], missing: reading == null, duty: reading == null ? null : table[Math.max(0, Math.min(table.length - 1, Math.round(reading) - t0))] };
     });
     const main = ch.curves.find((cv) => cv.source === ch.follow[0]);
@@ -150,7 +156,7 @@ const state = {
     preset('Rainbow', 'rainbow_wave', [], 45, 50, 'right'),
   ],
   active_profile: null,
-  coolers: [kraken, hydro, gpuCard],
+  coolers: [kraken, hydro, gpuCard, fanCtl],
   temps: [],
   launch_at_login: false,
   engine: { mode: 'standard', bundled: true, full_access: 'off', version: '1.1-8e16de2', problem: null },
@@ -220,6 +226,12 @@ setInterval(() => {
   } else {
     h.status = null;
   }
+  const fc = state.coolers[3];
+  fc.state = fc.takeover ? 'active' : 'idle';
+  if (fc.takeover) {
+    const d = fc.channels.map((ch) => ch.curves?.find((cv) => cv.source === ch.follow[0])?.duty ?? 60);
+    fc.status = { fan_duty: Math.round((d[0] + d[1]) / 2), fan_rpms: [d[0] * 15, d[1] * 16, 0], fan_duties: [d[0], d[1], 0], fans_connected: [true, true, false], fault: false };
+  } else fc.status = null;
   const g = state.coolers[2];
   g.state = !g.takeover ? 'idle' : g.needs_setup ? 'needs_setup' : 'active';
   const gpuNow = 54 + Math.round(Math.sin(performance.now() / 9000) * 80) / 10;

@@ -20,6 +20,7 @@ pub mod hid;
 pub mod hydro;
 pub mod kraken;
 pub mod manager;
+pub mod nzxt_fans;
 pub mod relay;
 pub mod screen;
 #[cfg(windows)]
@@ -334,6 +335,10 @@ pub struct CoolerStatus {
     pub fan_duty: Option<u8>,
     /// Each fan's speed, when the cooler reports them one by one.
     pub fan_rpms: Vec<u32>,
+    /// Each fan's duty, for controllers that report them one by one.
+    pub fan_duties: Vec<u8>,
+    /// Which fan ports have a fan plugged in, when the controller can tell.
+    pub fans_connected: Vec<bool>,
     /// The pump's built-in speed mode, for pumps that only have modes.
     pub pump_mode: Option<String>,
     /// The cooler reported a fault (often: USB connected but no SATA power).

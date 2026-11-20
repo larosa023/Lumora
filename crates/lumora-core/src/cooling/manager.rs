@@ -302,9 +302,14 @@ fn desired(
             let srcs = sources_of(model, &ch, cfg);
             // Live as soon as one followed reading isn't the liquid (which
             // the cooler can follow by itself) and Lumora has it.
-            let live_reading = srcs
-                .iter()
-                .any(|s| !curve::is_liquid(s) && temps::get(s).is_some());
+            // A device without curves of its own follows the liquid live too.
+            let live_reading = srcs.iter().any(|s| {
+                if curve::is_liquid(s) {
+                    model.software_only() && liquid.is_some()
+                } else {
+                    temps::get(s).is_some()
+                }
+            });
             if ch.kind == ChannelKind::Curve && live_reading {
                 // Whichever curve asks for more.
                 let at = |offset: f32| {
@@ -401,7 +406,7 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                 owner_running: owner.is_some_and(|a| owner_is_running(a, &inner.running_apps)),
                 takeover: cfg.takeover,
                 leave_speeds: cfg.leave_speeds,
-                kind: if r.model.is_gpu() { "gpu" } else { "aio" },
+                kind: r.model.kind(),
                 state: r.state,
                 message: r.message.clone(),
                 notice: r.notice.clone(),
@@ -413,7 +418,11 @@ fn views(inner: &Inner) -> Vec<CoolerView> {
                     .into_iter()
                     .map(|ch| {
                         let follow = sources_of(&r.model, &ch, &cfg);
-                        let liquid = r.status.as_ref().and_then(|st| st.liquid_c);
+                        let liquid = r
+                            .status
+                            .as_ref()
+                            .and_then(|st| st.liquid_c)
+                            .or_else(|| temps::get("liquid"));
                         let curves: Vec<CurveView> = choices(&r.model, &ch)
                             .into_iter()
                             .map(|s| {
@@ -512,7 +521,12 @@ fn service(r: &mut Runtime, cfg: &CoolerConfig, backend: &mut dyn Backend) {
         }
     }
 
-    let liquid_now = r.status.as_ref().and_then(|st| st.liquid_c);
+    // A fan controller has no liquid of its own: it follows the AIO's.
+    let liquid_now = r
+        .status
+        .as_ref()
+        .and_then(|st| st.liquid_c)
+        .or_else(|| temps::get("liquid"));
     let (mut want, live_speeds) = desired(&r.model, cfg, liquid_now, &r.software);
     // Live duties only move in steps, and only come down once the reading has
     // really dropped, so the fans don't hunt.
@@ -816,6 +830,7 @@ mod tests {
     use super::super::curve::Preset;
     use super::super::fake::FakeBackend;
     use super::super::kraken::PUMP_MIN_DUTY;
+    use super::super::nzxt_fans;
     use super::super::LightSpeed;
     use super::*;
 
@@ -1064,6 +1079,52 @@ mod tests {
                 .is_some_and(|(c, t)| c == "fan" && t[0] == 85)
         });
         temps::set("gpu", None);
+    }
+
+    #[test]
+    fn case_fans_follow_the_aio_liquid_live_and_rest_at_a_safe_speed() {
+        let (backend, _kraken) = FakeBackend::with_kraken(0x300C);
+        let fans = backend.add_fans(0x2019);
+        let m = manager(backend, BTreeMap::new(), &[]);
+        wait("discovery", || m.views().len() == 2);
+        let v = m.views();
+        let ctl = v.iter().find(|c| c.kind == "fans").unwrap();
+        assert!(!ctl.takeover, "case fans start hands-off");
+        assert_eq!(ctl.channels.len(), 3);
+        let id = ctl.id.clone();
+        let kraken = v.iter().find(|c| c.kind == "aio").unwrap().id.clone();
+        // The AIO has to be running for its liquid reading to exist.
+        m.set_config(
+            &kraken,
+            CoolerConfig {
+                takeover: true,
+                ..Default::default()
+            },
+        );
+        thread::sleep(Duration::from_millis(1500));
+        assert!(fans.lock().unwrap().sets.is_empty(), "untouched while off");
+
+        let mut cfg = CoolerConfig {
+            takeover: true,
+            ..Default::default()
+        };
+        m.set_config(&id, cfg.clone());
+        // Fake liquid 33.4 °C on the balanced fan curve: 51 %.
+        wait("live duty", || fans.lock().unwrap().duties == [51, 51, 51]);
+        wait("readings", || {
+            m.views()
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.status.clone())
+                .is_some_and(|s| s.fan_rpms == vec![765, 765, 0])
+        });
+
+        // Handing back leaves them at the safe speed.
+        cfg.takeover = false;
+        m.set_config(&id, cfg);
+        wait("safe speed", || {
+            fans.lock().unwrap().duties == [nzxt_fans::SAFE_DUTY; 3]
+        });
     }
 
     #[test]

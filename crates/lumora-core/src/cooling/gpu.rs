@@ -387,6 +387,8 @@ impl Driver for GpuFans {
             fan_rpm: None,
             fan_duty: avg,
             fan_rpms: Vec::new(),
+            fan_duties: Vec::new(),
+            fans_connected: Vec::new(),
             pump_mode: None,
             fault: false,
         })

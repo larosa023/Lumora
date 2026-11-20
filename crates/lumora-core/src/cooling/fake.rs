@@ -307,10 +307,68 @@ impl Link for FakeHydro {
     }
 }
 
+/// A pretend NZXT RGB & Fan Controller: three fan ports, fixed duties only.
+pub struct FakeFansState {
+    pub pid: u16,
+    pub duties: [u8; 3],
+    /// Every speed set, as (fan index, duty).
+    pub sets: Vec<(usize, u8)>,
+    queue: VecDeque<Vec<u8>>,
+}
+
+pub struct FakeFans(pub Arc<Mutex<FakeFansState>>);
+
+impl Link for FakeFans {
+    fn write(&mut self, msg: &[u8]) -> io::Result<()> {
+        assert_eq!(msg.len(), 64, "fan controller reports are 64 bytes");
+        let mut s = self.0.lock().unwrap();
+        match (msg[0], msg[1]) {
+            (0x10, 0x01) => {
+                let mut r = vec![0u8; 64];
+                r[0] = 0x11;
+                r[1] = 0x01;
+                r[0x11] = 1;
+                r[0x12] = 7;
+                r[0x13] = 2;
+                s.queue.push_back(r);
+            }
+            (0x62, 0x01) => {
+                for i in 0..3 {
+                    if msg[2] & (1 << i) != 0 {
+                        s.duties[i] = msg[3 + i];
+                        s.sets.push((i, msg[3 + i]));
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, _timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        let mut s = self.0.lock().unwrap();
+        if let Some(r) = s.queue.pop_front() {
+            return Ok(Some(r));
+        }
+        // Fan report: fans 1 and 2 plugged in.
+        let mut r = vec![0u8; 64];
+        r[0] = 0x67;
+        r[1] = 0x02;
+        for i in 0..3 {
+            r[16 + i] = if i < 2 { 2 } else { 0 };
+            let rpm = if i < 2 { s.duties[i] as u16 * 15 } else { 0 };
+            r[24 + 2 * i..26 + 2 * i].copy_from_slice(&rpm.to_le_bytes());
+            r[40 + i] = s.duties[i];
+        }
+        Ok(Some(r))
+    }
+}
+
 #[derive(Default, Clone)]
 pub struct FakeBackend {
     pub devices: Arc<Mutex<Vec<Arc<Mutex<FakeKrakenState>>>>>,
     pub hydros: Arc<Mutex<Vec<Arc<Mutex<FakeHydroState>>>>>,
+    pub fans: Arc<Mutex<Vec<Arc<Mutex<FakeFansState>>>>>,
 }
 
 impl FakeBackend {
@@ -332,6 +390,17 @@ impl FakeBackend {
     pub fn add_hydro(&self, pid: u16) -> Arc<Mutex<FakeHydroState>> {
         let state = Arc::new(Mutex::new(FakeHydroState::new(pid)));
         self.hydros.lock().unwrap().push(state.clone());
+        state
+    }
+
+    pub fn add_fans(&self, pid: u16) -> Arc<Mutex<FakeFansState>> {
+        let state = Arc::new(Mutex::new(FakeFansState {
+            pid,
+            duties: [40; 3],
+            sets: Vec::new(),
+            queue: VecDeque::new(),
+        }));
+        self.fans.lock().unwrap().push(state.clone());
         state
     }
 
@@ -371,10 +440,30 @@ impl Backend for FakeBackend {
                 problem: None,
             });
         }
+        for f in self.fans.lock().unwrap().iter() {
+            let d = f.lock().unwrap();
+            out.push(FoundCooler {
+                id: format!("hid:{NZXT_VID:04x}:{:04x}:FANS", d.pid),
+                vid: NZXT_VID,
+                pid: d.pid,
+                serial: "FANS".into(),
+                needs_setup: false,
+                needs_restart: false,
+                problem: None,
+            });
+        }
         out
     }
 
     fn open(&mut self, cooler: &FoundCooler) -> io::Result<Box<dyn Link>> {
+        if cooler.serial == "FANS" {
+            let fans = self.fans.lock().unwrap();
+            let d = fans
+                .iter()
+                .find(|d| d.lock().unwrap().pid == cooler.pid)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "gone"))?;
+            return Ok(Box::new(FakeFans(d.clone())));
+        }
         if cooler.vid == CORSAIR_VID {
             let hydros = self.hydros.lock().unwrap();
             let d = hydros

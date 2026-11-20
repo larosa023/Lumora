@@ -241,6 +241,8 @@ impl Driver for HydroPro {
             fan_rpm: avg,
             fan_duty: None,
             fan_rpms: fans,
+            fan_duties: Vec::new(),
+            fans_connected: Vec::new(),
             pump_mode: mode,
             fault: false,
         })

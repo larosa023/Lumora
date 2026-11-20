@@ -8,6 +8,7 @@ use super::curve::SpeedSetting;
 use super::gpu::{self, GpuFans, GpuModel};
 use super::hydro::{self, HydroModel, HydroPro};
 use super::kraken::{self, Kraken, KrakenModel, PUMP_MIN_DUTY};
+use super::nzxt_fans::{self, FanController, FanControllerModel};
 use super::{Bulk, CoolerStatus, LightSettings, Link, ScreenSettings};
 
 /// How a channel's speed is set.
@@ -35,12 +36,16 @@ pub enum Model {
     Hydro(&'static HydroModel),
     /// A graphics card's own fans.
     Gpu(&'static GpuModel),
+    /// A case fan controller (no pump, no curves of its own).
+    Fans(&'static FanControllerModel),
 }
 
 impl Model {
     pub fn find(vid: u16, pid: u16) -> Option<Model> {
         match vid {
-            kraken::NZXT_VID => kraken::model(pid).map(Model::Kraken),
+            kraken::NZXT_VID => kraken::model(pid)
+                .map(Model::Kraken)
+                .or_else(|| nzxt_fans::model(pid).map(Model::Fans)),
             hydro::CORSAIR_VID => hydro::model(pid).map(Model::Hydro),
             gpu::NVIDIA_VID => gpu::model(pid).map(Model::Gpu),
             _ => None,
@@ -52,6 +57,7 @@ impl Model {
             Model::Kraken(m) => m.name,
             Model::Hydro(m) => m.name,
             Model::Gpu(m) => m.name,
+            Model::Fans(m) => m.name,
         }
     }
 
@@ -60,6 +66,7 @@ impl Model {
             Model::Kraken(_) => "NZXT",
             Model::Hydro(_) => "Corsair",
             Model::Gpu(_) => "NVIDIA",
+            Model::Fans(_) => "NZXT",
         }
     }
 
@@ -88,6 +95,14 @@ impl Model {
                 min_duty: m.min_duty,
                 kind: ChannelKind::Curve,
             }],
+            Model::Fans(m) => (0..m.fans as usize)
+                .map(|i| ChannelSpec {
+                    id: nzxt_fans::CHANNELS[i],
+                    name: nzxt_fans::CHANNEL_NAMES[i],
+                    min_duty: nzxt_fans::MIN_DUTY,
+                    kind: ChannelKind::Curve,
+                })
+                .collect(),
             Model::Hydro(_) => vec![
                 ChannelSpec {
                     id: "pump",
@@ -109,7 +124,21 @@ impl Model {
     pub fn screen(&self) -> Option<(u16, u16)> {
         match self {
             Model::Kraken(m) => m.lcd,
-            Model::Hydro(_) | Model::Gpu(_) => None,
+            Model::Hydro(_) | Model::Gpu(_) | Model::Fans(_) => None,
+        }
+    }
+
+    /// The device stores no curves, so Lumora drives every speed live.
+    pub fn software_only(&self) -> bool {
+        matches!(self, Model::Gpu(_) | Model::Fans(_))
+    }
+
+    /// "aio", "gpu" or "fans", for the page.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Model::Gpu(_) => "gpu",
+            Model::Fans(_) => "fans",
+            _ => "aio",
         }
     }
 
@@ -133,7 +162,7 @@ impl Model {
         match self {
             Model::Kraken(_) => 0,
             Model::Hydro(m) => m.fans,
-            Model::Gpu(_) => 0,
+            Model::Gpu(_) | Model::Fans(_) => 0,
         }
     }
 
@@ -142,6 +171,7 @@ impl Model {
             Model::Kraken(m) => Box::new(Kraken::new(link, m)),
             Model::Hydro(m) => Box::new(HydroPro::new(link, m)),
             Model::Gpu(m) => Box::new(GpuFans::new(link, m)),
+            Model::Fans(m) => Box::new(FanController::new(link, m)),
         }
     }
 }

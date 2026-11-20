@@ -24,6 +24,9 @@ function edited(c, ch) {
 }
 const SOURCE_NAMES = { liquid: 'Liquid', gpu: 'GPU', cpu: 'CPU' };
 const isGpu = (c) => c.kind === 'gpu';
+const isFans = (c) => c.kind === 'fans';
+/** Fan pages: a graphics card or a case fan controller (no pump, no screen). */
+const fanOnly = (c) => isGpu(c) || isFans(c);
 const LIGHT_MODES = [['static', 'Static'], ['shift', 'Color shift'], ['pulse', 'Pulse'], ['blink', 'Blink'], ['sync', 'Match Lumora']];
 const SCREEN_MODES = [['temperature', 'Temperature'], ['liquid', 'NZXT built-in'], ['color', 'Colors'], ['image', 'Picture'], ['unchanged', 'Leave as is']];
 const PALETTE = ['#7c5cff', '#00d2ff', '#ff3d8b', '#ffd400', '#3ddc97'];
@@ -103,7 +106,8 @@ export const coolerId = (sel) => (sel && sel.startsWith('cooler:') ? sel.slice(7
 export const selectedCooler = () => coolers().find((c) => c.id === coolerId(ctx.state.selected)) || null;
 const fmt = (v, digits = 0) => (v == null ? '–' : Number(v).toFixed(digits));
 /** A live reading: the cooler's liquid, or a GPU/CPU temperature. */
-const tempOf = (c, src) => (src === 'liquid' ? c.status?.liquid_c : ctx.state.app.temps?.find((x) => x.source === src)?.celsius);
+const reading = (src) => ctx.state.app.temps?.find((x) => x.source === src)?.celsius;
+const tempOf = (c, src) => (src === 'liquid' ? c.status?.liquid_c ?? reading('liquid') : reading(src));
 /** The number shown beside a cooler in the sidebar. */
 const mainTemp = (c) => tempOf(c, isGpu(c) ? 'gpu' : 'liquid');
 
@@ -113,9 +117,9 @@ export function sidebarHtml() {
   const list = coolers();
   if (!list.length) return '';
   return '<div class="group-title">Cooler control</div>' + list.map((c) => {
-    const live = c.state === 'active' && mainTemp(c) != null;
+    const live = c.state === 'active' && (isFans(c) ? c.status?.fan_duty != null : mainTemp(c) != null);
     const badge = live
-      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${fmt(mainTemp(c), isGpu(c) ? 0 : 1)}°</span>`
+      ? `<span class="nav-temp" data-cooler-temp="${ctx.esc(c.id)}">${isFans(c) ? `${fmt(c.status.fan_duty)}%` : `${fmt(mainTemp(c), isGpu(c) ? 0 : 1)}°`}</span>`
       : c.takeover && c.needs_restart
         ? '<span class="nav-badge muted">Restart</span>'
         : c.takeover && c.needs_setup
@@ -171,7 +175,7 @@ export function renderHead(c) {
   const bits = [c.vendor, c.firmware ? `firmware ${c.firmware}` : '', c.screen ? `${c.screen.width}×${c.screen.height} screen` : ''].filter(Boolean);
   $('#stageSub').textContent = bits.join(', ');
   $('#stageActions').innerHTML = `<label class="chip control-chip" title="${isGpu(c) ? 'Off: the NVIDIA driver runs the fans as usual' : 'Choose who runs this cooler\'s pump, fans and screen'}">
-    <span>${isGpu(c) ? 'Lumora controls the fans' : 'Run by Lumora'}</span><input type="checkbox" class="switch small" id="takeoverSwitch" ${c.takeover ? 'checked' : ''}>
+    <span>${fanOnly(c) ? 'Lumora controls the fans' : 'Run by Lumora'}</span><input type="checkbox" class="switch small" id="takeoverSwitch" ${c.takeover ? 'checked' : ''}>
   </label>`;
 }
 
@@ -180,6 +184,9 @@ const parts = (c) => {
   if (c.leave_speeds) return c.screen ? 'screen' : c.light ? 'lighting' : 'readings';
   return c.screen ? 'pump, fans and screen' : c.light ? 'pump, fans and lighting' : 'pump and fans';
 };
+
+// The speed case fans are left at when Lumora isn't driving them.
+const FAN_SAFE = 60;
 
 const setupCommand = (c) => (isGpu(c) ? 'setup_cpu_sensor' : 'setup_cooler_access');
 
@@ -212,8 +219,26 @@ function askGpuTakeover(c) {
   };
 }
 
+function askFansTakeover(c) {
+  const go = $('#coolerDialogGo');
+  const app = c.owner_app || 'NZXT CAM';
+  $('#coolerDialogTitle').textContent = 'Let Lumora control your case fans?';
+  $('#coolerDialogText').textContent = c.owner_running
+    ? `${app} is running right now and also sets these fans. Quit it from the system tray first (or turn off its fan control), or the two apps will keep overriding each other.`
+    : 'Lumora will set each fan live from the temperature you pick (the AIO liquid, CPU or GPU), following your curve.';
+  $('#coolerDialogKeep').textContent = `The controller can't store curves, so the fans only follow them while Lumora runs. Whenever Lumora closes or you turn this off, they're left at ${FAN_SAFE}% so they're never stuck slow. The lighting isn't affected.`;
+  go.textContent = 'Let Lumora control them';
+  go.disabled = false;
+  $('#coolerDialog').showModal();
+  go.onclick = () => {
+    $('#coolerDialog').close();
+    update(c, (x) => (x.takeover = true), { now: true });
+  };
+}
+
 function askTakeover(c) {
   if (isGpu(c)) return askGpuTakeover(c);
+  if (isFans(c)) return askFansTakeover(c);
   const app = c.owner_app || 'its own app';
   const go = $('#coolerDialogGo');
   $('#coolerDialogTitle').textContent = c.needs_setup ? `Set up ${c.vendor} ${c.name}?` : `Let Lumora run ${c.name}?`;
@@ -267,8 +292,23 @@ function gpuReadouts(c) {
   </div>`;
 }
 
+/** Case fan controller: one tile per fan port. */
+function fansReadouts(c) {
+  const s = c.status || {};
+  const tiles = c.channels.map((ch, i) => {
+    const plugged = s.fans_connected?.[i];
+    return `<div class="readout" data-readout="${ch.id}">
+      <span class="readout-label">${ctx.esc(ch.name)}</span>
+      <span class="readout-value"><b>${plugged === false ? '–' : fmt(s.fan_rpms?.[i])}</b><small>rpm</small></span>
+      <span class="readout-sub">${plugged === false ? 'Nothing plugged in' : s.fan_duties?.[i] != null ? `${s.fan_duties[i]}% duty` : ''}</span>
+    </div>`;
+  }).join('');
+  return `<div class="readouts">${tiles}</div>`;
+}
+
 function readouts(c) {
   if (isGpu(c)) return gpuReadouts(c);
+  if (isFans(c)) return fansReadouts(c);
   const s = c.status || {};
   const stat = (key, label, value, unit, sub) => `<div class="readout" data-readout="${key}">
       <span class="readout-label">${label}</span>
@@ -350,7 +390,7 @@ function curveSvg(c, ch) {
 
 /** The switch that keeps Lumora's hands off the pump and fans. */
 function speedsHtml(c) {
-  if (!c.channels.length || isGpu(c)) return '';
+  if (!c.channels.length || fanOnly(c)) return '';
   const on = !c.leave_speeds;
   const what = c.screen ? 'lighting and screen' : 'lighting';
   const hint = on
@@ -389,7 +429,13 @@ function channelHtml(c, ch) {
   const live = follow.some((s) => s !== 'liquid');
   const missing = follow.filter((s) => s !== 'liquid' && info(s).missing);
   let hint;
-  if (isGpu(c)) {
+  if (isFans(c)) {
+    const gone = follow.filter((s) => info(s).missing);
+    const label = (s) => (s === 'liquid' ? 'AIO liquid' : names[s]);
+    hint = gone.length === follow.length
+      ? `There's no ${gone.map(label).join(' or ')} reading right now${gone.includes('liquid') ? ' (the liquid comes from an AIO cooler Lumora runs)' : ''}, so this fan is held at ${FAN_SAFE}%.`
+      : `Lumora sets this fan live from the ${follow.map(label).join(' and ')} temperature${follow.length > 1 ? 's, whichever curve asks for more' : ''}. Never below ${ch.min_duty}%. When Lumora closes, it stays at ${FAN_SAFE}%.`;
+  } else if (isGpu(c)) {
     hint = `Follows the GPU temperature. Never below ${ch.min_duty}% (the card's own minimum), full speed from ${full} °C. If Lumora closes, the NVIDIA driver takes the fans back.`;
   } else if (follow.length > 1) {
     // Which curve is winning right now.
@@ -650,6 +696,14 @@ export function renderPage(c) {
     </div></div>`;
     return;
   }
+  if (!c.takeover && isFans(c)) {
+    body.innerHTML = `<div class="cool-page"><div class="hands-off static">
+      <strong>Lumora isn't controlling these fans</strong>
+      <span>Their speed is left to ${ctx.esc(c.owner_app || 'NZXT CAM')} (or whatever it was last set to). Let Lumora control them to give each fan its own curve on the AIO liquid, CPU or GPU temperature. It's optional, the lighting isn't affected, and you can switch it off any time.</span>
+      <button class="btn primary" data-takeover="on">Let Lumora control the fans</button>
+    </div></div>`;
+    return;
+  }
   if (!c.takeover) {
     const app = c.owner_app || 'its own app';
     body.innerHTML = `<div class="cool-page"><div class="hands-off static">
@@ -690,11 +744,20 @@ export function renderPage(c) {
     ${banner}${notice}
     ${readouts(c)}
     ${tempChartHtml()}
-    <div class="cool-grid">
-      <div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
-      <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>
+    <div class="cool-grid${isFans(c) ? ' even' : ''}">
+      ${isFans(c) ? fanColumns(c) : `<div class="cool-col">${speedsHtml(c)}${c.leave_speeds ? '' : c.channels.map((ch) => channelHtml(c, ch)).join('')}</div>
+      <div class="cool-col">${screenHtml(c)}${lightHtml(c)}${fanLightingHtml(c)}</div>`}
     </div>
   </div>`;  refreshTempChart(true);
+}
+
+/** Case fan cards across both columns, leaving out empty ports once known. */
+function fanColumns(c) {
+  const plugged = c.status?.fans_connected;
+  const shown = c.channels.filter((ch, i) => !plugged || !plugged.some(Boolean) || plugged[i]);
+  const cards = shown.map((ch) => channelHtml(c, ch));
+  return `<div class="cool-col">${cards.filter((_, i) => i % 2 === 0).join('')}</div>
+      <div class="cool-col">${cards.filter((_, i) => i % 2 === 1).join('')}</div>`;
 }
 
 /** Live numbers only, so dragging a curve isn't interrupted. */
@@ -710,6 +773,10 @@ export function refreshLive(c) {
   if (isGpu(c)) {
     set('gpu', fmt(tempOf(c, 'gpu')));
     set('fan', fmt(s.fan_duty));
+  } else if (isFans(c)) {
+    c.channels.forEach((ch, i) => {
+      if (s.fans_connected?.[i] !== false) set(ch.id, fmt(s.fan_rpms?.[i]), s.fan_duties?.[i] != null ? `${s.fan_duties[i]}% duty` : '');
+    });
   } else {
     set('liquid', fmt(s.liquid_c, 1));
     set('pump', fmt(s.pump_rpm), pumpSub(s));
@@ -727,6 +794,10 @@ export function refreshLive(c) {
 export function refreshSidebarTemps() {
   for (const c of coolers()) {
     const el = document.querySelector(`[data-cooler-temp="${CSS.escape(c.id)}"]`);
+    if (el && isFans(c)) {
+      if (c.status?.fan_duty != null) el.textContent = `${fmt(c.status.fan_duty)}%`;
+      continue;
+    }
     const t = mainTemp(c);
     if (el && t != null) el.textContent = `${fmt(t, isGpu(c) ? 0 : 1)}°`;
   }
