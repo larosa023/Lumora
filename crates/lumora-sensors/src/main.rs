@@ -276,6 +276,34 @@ mod win {
         }
     }
 
+    impl Reader {
+        /// CPU package power from the energy counter (AMD and Intel RAPL),
+        /// worked out from the change since the last reading.
+        fn power(&self, last: &mut Option<(u64, std::time::Instant)>) -> Option<f32> {
+            let (unit_msr, energy_msr) = match self.vendor {
+                Vendor::Amd => (0xC001_0299u64, 0xC001_029Bu64),
+                Vendor::Intel => (0x606, 0x611),
+            };
+            let unit = (self.io.call("ioctl_read_msr", &[unit_msr]).ok()? >> 8) & 0x1F;
+            let raw = self.io.call("ioctl_read_msr", &[energy_msr]).ok()? & 0xFFFF_FFFF;
+            let now = std::time::Instant::now();
+            let prev = last.replace((raw, now));
+            let (p, at) = prev?;
+            let secs = now.duration_since(at).as_secs_f64();
+            if secs < 0.2 {
+                return None;
+            }
+            // The counter is 32 bits and wraps.
+            let delta = if raw >= p {
+                raw - p
+            } else {
+                raw + (1u64 << 32) - p
+            };
+            let watts = delta as f64 / (1u64 << unit) as f64 / secs;
+            (0.0..1000.0).contains(&watts).then_some(watts as f32)
+        }
+    }
+
     /// The motherboard's Super I/O chip through PawnIO's `LpcIO` module,
     /// under the ISA-bus lock other monitoring tools share.
     struct Lpc {
@@ -381,15 +409,21 @@ mod win {
         let reading = line.clone();
         std::thread::spawn(move || loop {
             match Reader::new() {
-                Ok(reader) => loop {
-                    let text = match reader.read() {
-                        Ok(t) if (-20.0..150.0).contains(&t) => format!("cpu {t:.3}\n"),
-                        Ok(t) => format!("error the sensor gave an odd reading ({t})\n"),
-                        Err(e) => format!("error {e}\n"),
-                    };
-                    *reading.lock().unwrap_or_else(|e| e.into_inner()) = text;
-                    std::thread::sleep(Duration::from_secs(1));
-                },
+                Ok(reader) => {
+                    let mut energy: Option<(u64, std::time::Instant)> = None;
+                    loop {
+                        let mut text = match reader.read() {
+                            Ok(t) if (-20.0..150.0).contains(&t) => format!("cpu {t:.3}\n"),
+                            Ok(t) => format!("error the sensor gave an odd reading ({t})\n"),
+                            Err(e) => format!("error {e}\n"),
+                        };
+                        if let Some(w) = reader.power(&mut energy) {
+                            text.push_str(&format!("power {w:.1}\n"));
+                        }
+                        *reading.lock().unwrap_or_else(|e| e.into_inner()) = text;
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
                 Err(e) => {
                     // The driver may still be starting right after sign-in.
                     *reading.lock().unwrap_or_else(|e| e.into_inner()) = format!("error {e}\n");

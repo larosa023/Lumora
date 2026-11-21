@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
 };
-use windows_sys::Win32::System::SystemInformation::GetActiveProcessorCount;
+use windows_sys::Win32::System::Threading::GetActiveProcessorCount;
 use windows_sys::Win32::System::Threading::{
     GetProcessInformation, OpenProcess, ProcessPowerThrottling, QueryFullProcessImageNameW,
     SetPriorityClass, SetProcessInformation, TerminateProcess, ABOVE_NORMAL_PRIORITY_CLASS,

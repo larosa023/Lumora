@@ -49,6 +49,61 @@ pub struct Settings {
     /// LED counts the user set for resizable zones (ARGB headers), by device
     /// id then zone index, so they come back even if the engine forgets.
     pub zone_sizes: BTreeMap<String, BTreeMap<usize, usize>>,
+    /// How readings are shown.
+    pub units: Units,
+    /// Notifications for heat, memory and disk space.
+    pub alerts: crate::monitor::alerts::AlertSettings,
+    /// What the tray icon shows: "logo", "cpu_temp", "gpu_temp" or "cpu_usage".
+    pub tray_icon: String,
+    /// System-wide shortcuts, like "Ctrl+Shift+L" (empty = none).
+    pub hotkeys: Hotkeys,
+    /// The always-on-top mini overlay.
+    pub overlay: OverlaySettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Units {
+    /// "c" or "f".
+    pub temp: String,
+    /// "gb" or "mb".
+    pub memory: String,
+    /// "mbps" (bits) or "mbs" (bytes).
+    pub network: String,
+}
+
+impl Default for Units {
+    fn default() -> Self {
+        Units {
+            temp: "c".into(),
+            memory: "gb".into(),
+            network: "mbps".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hotkeys {
+    pub open: String,
+    pub overlay: String,
+}
+
+impl Default for Hotkeys {
+    fn default() -> Self {
+        Hotkeys {
+            open: "Ctrl+Shift+L".into(),
+            overlay: "Ctrl+Shift+O".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlaySettings {
+    pub shown: bool,
+    /// Clicks pass through it to the game.
+    pub locked: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +123,11 @@ impl Default for Settings {
             device_control: BTreeMap::new(),
             coolers: BTreeMap::new(),
             zone_sizes: BTreeMap::new(),
+            units: Units::default(),
+            alerts: Default::default(),
+            tray_icon: "logo".into(),
+            hotkeys: Hotkeys::default(),
+            overlay: OverlaySettings::default(),
         }
     }
 }
@@ -98,6 +158,8 @@ impl Settings {
         self.device_control = current.device_control.clone();
         self.coolers = current.coolers.clone();
         self.zone_sizes = current.zone_sizes.clone();
+        // The overlay is shown and locked from its own controls.
+        self.overlay = current.overlay.clone();
         self
     }
 

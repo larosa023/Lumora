@@ -423,6 +423,8 @@ pub mod cpu {
                 super::set("cpu", Some(c));
                 set_status(State::Ok, "");
             }
+        } else if let Some(v) = line.strip_prefix("power ") {
+            crate::monitor::set_cpu_power(v.trim().parse::<f32>().ok());
         } else if let Some(msg) = line.strip_prefix("error ") {
             super::set("cpu", None);
             set_status(State::Error, msg);

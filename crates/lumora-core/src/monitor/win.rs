@@ -20,8 +20,9 @@ use windows_sys::Win32::System::Power::{
 use windows_sys::Win32::System::ProcessStatus::{K32GetPerformanceInfo, PERFORMANCE_INFORMATION};
 use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ};
 use windows_sys::Win32::System::SystemInformation::{
-    GetActiveProcessorCount, GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
 };
+use windows_sys::Win32::System::Threading::GetActiveProcessorCount;
 use windows_sys::Win32::System::WindowsProgramming::SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION;
 
 use super::{busy, Cpu, DiskRate, Memory, NetRate};
@@ -403,10 +404,14 @@ impl Sampler {
             let idle = p.add("\\PhysicalDisk(*)\\% Idle Time");
             let read = p.add("\\PhysicalDisk(*)\\Disk Read Bytes/sec");
             let write = p.add("\\PhysicalDisk(*)\\Disk Write Bytes/sec");
-            if let (Some(a), Some(b), Some(c)) = (idle, read, write) {
-                self.disk = Some((a, b, c));
-                p.collect();
-            }
+            let added = match (idle, read, write) {
+                (Some(a), Some(b), Some(c)) => {
+                    p.collect();
+                    Some((a, b, c))
+                }
+                _ => None,
+            };
+            self.disk = added;
         }
         let (Some((ia, ib, ic)), Some(p)) = (self.disk, self.pdh.as_ref()) else {
             return Vec::new();

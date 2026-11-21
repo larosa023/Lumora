@@ -213,9 +213,10 @@ mod imp {
     use crate::monitor::win::{reg_dword, reg_string};
     use windows_sys::Win32::System::Registry::HKEY_LOCAL_MACHINE;
     use windows_sys::Win32::System::SystemInformation::{
-        GetActiveProcessorCount, GetLogicalProcessorInformationEx, GetSystemFirmwareTable,
-        GlobalMemoryStatusEx, RelationProcessorCore, MEMORYSTATUSEX, RSMB,
+        GetLogicalProcessorInformationEx, GetSystemFirmwareTable, GlobalMemoryStatusEx,
+        RelationProcessorCore, MEMORYSTATUSEX, RSMB,
     };
+    use windows_sys::Win32::System::Threading::GetActiveProcessorCount;
 
     fn os() -> String {
         let k = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";

@@ -79,11 +79,10 @@ mod imp {
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDriveStringsW,
-        GetVolumeInformationW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        GetVolumeInformationW, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, OPEN_EXISTING,
     };
-    use windows_sys::Win32::System::Ioctl::{
-        IOCTL_STORAGE_QUERY_PROPERTY, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
-    };
+    use windows_sys::Win32::System::Ioctl::IOCTL_STORAGE_QUERY_PROPERTY;
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
     const IOCTL_DISK_GET_LENGTH_INFO: u32 = 0x0007_405C;
