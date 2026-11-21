@@ -33,6 +33,17 @@ export const ICONS = {
   trash: p('<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'),
   save: p('<path d="M5 3h11l3 3v15H5z"/><path d="M8 3v5h7M8 21v-7h8v7"/>'),
   reset: p('<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>'),
+  gauge: p('<path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-5"/><circle cx="12" cy="17" r="1.2"/>'),
+  cpu: p('<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/>'),
+  list: p('<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>'),
+  rocket: p('<path d="M12 15l-3-3c1.5-5 4.5-8 10-8 0 5.5-3 8.5-8 10z"/><path d="M9 12H5l2.5-3.5H11M12 15v4l3.5-2.5V13"/><path d="M6.5 17.5L4 20"/>'),
+  cog: p('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>'),
+  thermo: p('<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0z"/><path d="M12 9v7"/>'),
+  clock: p('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  info: p('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+  overlay: p('<rect x="3" y="4" width="18" height="13" rx="2"/><rect x="12" y="7" width="6" height="4" rx="1"/><path d="M9 21h6"/>'),
+  copy: p('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>'),
+  download: p('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   check: p('<path d="M5 12.5l4.5 4.5L19 7.5"/>'),
 };
 

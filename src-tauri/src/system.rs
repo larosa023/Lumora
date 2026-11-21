@@ -352,6 +352,8 @@ pub fn overlay_lock(handle: AppHandle, app: State<App>, locked: bool) -> Overlay
     if let Some(w) = handle.get_webview_window("overlay") {
         let _ = w.set_ignore_cursor_events(locked);
     }
+    use tauri::Emitter;
+    let _ = handle.emit("lumora://overlay-lock", locked);
     overlay_state(&handle)
 }
 

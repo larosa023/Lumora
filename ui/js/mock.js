@@ -3,6 +3,7 @@
 
 import { build, ledPositions } from './effects.js';
 import { localTable } from './cooling.js';
+import { systemMock } from './mock-system.js';
 
 const fx = (id, name, description, category, [min, max], speed, size, direction, colors) => ({
   id, name, description, category, min_colors: min, max_colors: max,
@@ -158,6 +159,9 @@ const state = {
   settings: {
     host: '127.0.0.1', port: 6742, fps: 30, theme: 'dark', accent: '#7c5cff', accent_follows_lighting: false,
     demo_devices: 'auto', start_minimized: false, close_to_tray: true, check_for_updates: true, builtin_engine: true,
+    units: { temp: 'c', memory: 'gb', network: 'mbps' },
+    alerts: { enabled: true, cpu_temp: 90, gpu_temp: 85, ram: 95, disk_free: 10, sustain_s: 30 },
+    tray_icon: 'logo', hotkeys: { open: 'Ctrl+Shift+L', overlay: 'Ctrl+Shift+O' }, overlay: { shown: false, locked: false },
   },
   profiles: [
     preset('Neon Drift', 'color_wave', ['#7c5cff', '#00d4ff', '#ff3da8'], 40, 50, 'right'),
@@ -268,6 +272,7 @@ setInterval(() => {
 }, 1000);
 
 const commands = {
+  ...systemMock((ev, p) => emit(ev, p), () => state.settings),
   get_state: () => clone({ ...state, snapshot: state.snapshot }),
   temp_history: () => {
     // A made-up half hour: a game session warming the GPU, then cooling off.

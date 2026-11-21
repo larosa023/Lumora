@@ -4,6 +4,7 @@ import { DeviceView } from './render.js';
 import { openPicker, closePicker } from './picker.js';
 import { icon } from './icons.js';
 import * as cooling from './cooling.js';
+import * as system from './system.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -171,7 +172,7 @@ function renderSidebar() {
       </button>`;
     }).join('');
   }).join('');
-  $('#deviceList').innerHTML = html + cooling.sidebarHtml();
+  $('#deviceList').innerHTML = html + cooling.sidebarHtml() + system.sidebarHtml();
   paintGlows();
 }
 
@@ -205,7 +206,7 @@ document.addEventListener('click', (e) => {
 function restoreSelection() {
   const id = state.restore;
   if (!id || state.selected) return false;
-  const known = cooling.coolerId(id) ? (state.app.coolers || []).some((c) => 'cooler:' + c.id === id) : devices().some((d) => d.id === id);
+  const known = system.isSystem(id) || (cooling.coolerId(id) ? (state.app.coolers || []).some((c) => 'cooler:' + c.id === id) : devices().some((d) => d.id === id));
   if (!known) return false;
   state.restore = '';
   select(id);
@@ -215,7 +216,8 @@ function restoreSelection() {
 function select(id) {
   state.selected = id;
   try { localStorage.setItem('lumora.selected', id); } catch { /* not remembered */ }
-  document.body.classList.toggle('cooler-view', !!cooling.coolerId(id));
+  document.body.classList.toggle('cooler-view', !!cooling.coolerId(id) || system.isSystem(id));
+  if (!system.isSystem(id)) system.leave();
   document.body.classList.toggle('device-hands-off', !!selectedDevice() && !selectedDevice().managed);
   closePicker();
   renderSidebar();
@@ -364,6 +366,7 @@ function makeView(canvas, device, opts) {
 }
 
 function renderStageHead() {
+  if (system.isSystem(state.selected)) return system.renderHead(state.selected);
   const cooler = cooling.selectedCooler();
   if (cooler) return cooling.renderHead(cooler);
   const d = selectedDevice();
@@ -433,6 +436,11 @@ function renderStage() {
   state.views.clear();
   const body = $('#stageBody');
   renderStageHead();
+  if (system.isSystem(state.selected)) {
+    document.body.classList.add('cooler-view');
+    return system.renderPage(state.selected);
+  }
+  system.leave();
   const cooler = cooling.selectedCooler();
   document.body.classList.toggle('cooler-view', !!cooler);
   if (cooler) return cooling.renderPage(cooler);
@@ -911,6 +919,99 @@ async function saveSettings(patch) {
     toast(String(err));
   }
   renderSettings();
+  system.refresh();
+}
+
+// --- System monitor settings ------------------------------------------------------
+
+const toUnit = (c) => (state.app.settings.units?.temp === 'f' ? Math.round(c * 9 / 5 + 32) : Math.round(c));
+const fromUnit = (v) => (state.app.settings.units?.temp === 'f' ? (v - 32) * 5 / 9 : v);
+
+function renderMonitorSettings() {
+  const s = state.app.settings;
+  const u = s.units || { temp: 'c', memory: 'gb', network: 'mbps' };
+  setRadio($('#unitTemp'), u.temp);
+  setRadio($('#unitMem'), u.memory);
+  setRadio($('#unitNet'), u.network);
+  setRadio($('#trayIcon'), s.tray_icon || 'logo');
+  const a = s.alerts || {};
+  $('#alertsOn').checked = !!a.enabled;
+  $('#alertFields').classList.toggle('disabled', !a.enabled);
+  document.querySelectorAll('[data-unit-temp]').forEach((el) => (el.textContent = u.temp === 'f' ? '°F' : '°C'));
+  const fill = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v ?? ''; };
+  fill('#alertCpu', a.cpu_temp != null ? toUnit(a.cpu_temp) : '');
+  fill('#alertGpu', a.gpu_temp != null ? toUnit(a.gpu_temp) : '');
+  fill('#alertRam', a.ram);
+  fill('#alertDisk', a.disk_free);
+  $('#overlayOn').checked = !!s.overlay?.shown;
+  $('#overlayLock').checked = !!s.overlay?.locked;
+  $('#hotkeyOpen').value = s.hotkeys?.open || '';
+  $('#hotkeyOverlay').value = s.hotkeys?.overlay || '';
+}
+
+const unitPatch = (key) => (ev) => {
+  const b = ev.target.closest('[data-v]');
+  if (b) saveSettings({ units: { ...state.app.settings.units, [key]: b.dataset.v } });
+};
+$('#unitTemp').addEventListener('click', unitPatch('temp'));
+$('#unitMem').addEventListener('click', unitPatch('memory'));
+$('#unitNet').addEventListener('click', unitPatch('network'));
+$('#trayIcon').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-v]');
+  if (b) saveSettings({ tray_icon: b.dataset.v });
+});
+$('#alertsOn').addEventListener('change', (ev) => saveSettings({ alerts: { ...state.app.settings.alerts, enabled: ev.target.checked } }));
+for (const [id, key, temp, lo, hi] of [['#alertCpu', 'cpu_temp', true, 40, 110], ['#alertGpu', 'gpu_temp', true, 40, 110], ['#alertRam', 'ram', false, 50, 100], ['#alertDisk', 'disk_free', false, 1, 50]]) {
+  $(id).addEventListener('change', (ev) => {
+    const n = parseFloat(ev.target.value);
+    const v = temp ? fromUnit(n) : n;
+    if (!Number.isFinite(v) || v < lo || v > hi) {
+      toast(`Pick a number between ${temp ? toUnit(lo) : lo} and ${temp ? toUnit(hi) : hi}`);
+      renderMonitorSettings();
+      return;
+    }
+    saveSettings({ alerts: { ...state.app.settings.alerts, [key]: Math.round(v * 10) / 10 } });
+  });
+}
+$('#overlayOn').addEventListener('change', async (ev) => {
+  const r = await api.invoke('overlay_toggle', { show: ev.target.checked });
+  state.app.settings.overlay = { ...state.app.settings.overlay, shown: r.shown, locked: r.locked };
+  renderSidebar();
+});
+$('#overlayLock').addEventListener('change', async (ev) => {
+  const r = await api.invoke('overlay_lock', { locked: ev.target.checked });
+  state.app.settings.overlay = { ...state.app.settings.overlay, shown: r.shown, locked: r.locked };
+  if (r.locked) toast(r.shown ? 'Overlay locked. Unlock it here or from the tray menu.' : 'The overlay will be locked when it opens');
+});
+
+/** "Ctrl+Shift+L" from a key press (null while only modifiers are held). */
+function comboOf(ev) {
+  if (['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) return null;
+  const parts = [];
+  if (ev.ctrlKey) parts.push('Ctrl');
+  if (ev.altKey) parts.push('Alt');
+  if (ev.shiftKey) parts.push('Shift');
+  if (ev.metaKey) parts.push('Super');
+  let key = ev.code.replace(/^Key/, '').replace(/^Digit/, '');
+  if (/^F\d+$/.test(ev.key)) key = ev.key;
+  if (!parts.length || (parts.length === 1 && parts[0] === 'Shift')) return '';
+  return [...parts, key].join('+');
+}
+for (const [id, key] of [['#hotkeyOpen', 'open'], ['#hotkeyOverlay', 'overlay']]) {
+  $(id).addEventListener('keydown', (ev) => {
+    if (ev.key === 'Tab' || ev.key === 'Escape') return;
+    ev.preventDefault();
+    const hk = { ...state.app.settings.hotkeys };
+    if (ev.key === 'Backspace' || ev.key === 'Delete') hk[key] = '';
+    else {
+      const combo = comboOf(ev);
+      if (combo === null) return;
+      if (combo === '') { toast('Hold Ctrl or Alt with the key'); return; }
+      hk[key] = combo;
+    }
+    ev.target.value = hk[key];
+    saveSettings({ hotkeys: hk });
+  });
 }
 
 function setRadio(container, value) {
@@ -933,6 +1034,7 @@ function renderSettings() {
   $('#autostart').checked = state.app.launch_at_login;
   $('#autoUpdate').checked = s.check_for_updates;
   $('#builtinEngine').checked = s.builtin_engine;
+  renderMonitorSettings();
   renderHardware();
   renderUpdateStatus();
   $('#about').textContent = `Lumora ${state.app.version}${api.inApp ? '' : ' (browser preview with demo devices)'}`;
@@ -1183,7 +1285,7 @@ function onSnapshot(next) {
   }
   state.app.snapshot = next;
   // Coolers aren't lighting devices, so they're never in this list.
-  if (state.selected && !cooling.coolerId(state.selected) && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
+  if (state.selected && !cooling.coolerId(state.selected) && !system.isSystem(state.selected) && !next.devices.some((d) => d.id === state.selected)) state.selected = '';
   if (devicesChanged) {
     restoreSelection();
     renderAll();
@@ -1241,6 +1343,7 @@ async function init() {
       open: (id) => select(id),
     },
   });
+  system.initSystem({ api, state, toast, esc, icon, rerender: () => renderSidebar() });
   applyTheme();
   try { state.restore = localStorage.getItem('lumora.selected') || ''; } catch { state.restore = ''; }
   restoreSelection();

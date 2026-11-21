@@ -150,8 +150,12 @@ impl MonitorHost {
     fn run(&self, handle: AppHandle) {
         let mut sampler = Sampler::new();
         let mut alerts = Alerts::default();
-        let mut last_history = Instant::now() - HISTORY_EVERY;
-        let mut last_disk_check = Instant::now() - DISK_CHECK_EVERY;
+        // (Instants can't go before the PC started, so "long ago" is checked.)
+        let long_ago = |d: Duration| Instant::now().checked_sub(d).unwrap_or_else(Instant::now);
+        let mut last_history = long_ago(HISTORY_EVERY);
+        let mut last_disk_check = long_ago(DISK_CHECK_EVERY);
+        // The first reading has no usage yet (it needs two to compare).
+        let mut first = true;
         let mut last_icon = String::new();
         loop {
             let (live, storage) = {
@@ -165,7 +169,7 @@ impl MonitorHost {
             let sample = sampler.sample(storage);
 
             // History: one point every few seconds.
-            if last_history.elapsed() >= HISTORY_EVERY {
+            if !first && last_history.elapsed() >= HISTORY_EVERY {
                 last_history = Instant::now();
                 let mut p = Point::empty(sample.at);
                 p.set("liquid", lumora_core::temps::get("liquid"));
@@ -223,13 +227,17 @@ impl MonitorHost {
             let tray_live = handle
                 .try_state::<crate::App>()
                 .is_some_and(|a| a.settings.lock().unwrap().tray_icon != "logo");
-            let wait = if live {
+            let wait = if first {
+                // A second reading soon, so usage is there from the start.
+                Duration::from_secs(1)
+            } else if live {
                 Duration::from_secs(1)
             } else if tray_live {
                 Duration::from_secs(2)
             } else {
                 HISTORY_EVERY
             };
+            first = false;
             if !self.sleep(wait) {
                 return;
             }

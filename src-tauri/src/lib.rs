@@ -295,6 +295,7 @@ fn update_settings(handle: AppHandle, app: State<App>, host: State<Arc<EngineHos
             return Err(format!("Another app is already using {}", failed.join(" and ")));
         }
     }
+    let _ = handle.emit("lumora://settings", &settings);
     if before.tray_icon != settings.tray_icon && settings.tray_icon == "logo" {
         system::set_tray_icon(&handle, None);
     }

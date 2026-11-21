@@ -199,6 +199,36 @@
       </section>
 
       <section class="sheet-section">
+        <h3>System monitor</h3>
+        <div class="unit-grid">
+          <span>Temperature</span>
+          <div class="segmented" id="unitTemp" role="radiogroup" aria-label="Temperature unit"><button type="button" data-v="c" role="radio">°C</button><button type="button" data-v="f" role="radio">°F</button></div>
+          <span>Memory</span>
+          <div class="segmented" id="unitMem" role="radiogroup" aria-label="Memory unit"><button type="button" data-v="gb" role="radio">GB</button><button type="button" data-v="mb" role="radio">MB</button></div>
+          <span>Network</span>
+          <div class="segmented" id="unitNet" role="radiogroup" aria-label="Network unit"><button type="button" data-v="mbps" role="radio">Mbps</button><button type="button" data-v="mbs" role="radio">MB/s</button></div>
+          <span>Tray icon</span>
+          <div class="segmented" id="trayIcon" role="radiogroup" aria-label="Tray icon"><button type="button" data-v="logo" role="radio">Logo</button><button type="button" data-v="cpu_temp" role="radio">CPU temp</button><button type="button" data-v="gpu_temp" role="radio">GPU temp</button><button type="button" data-v="cpu_usage" role="radio">CPU %</button></div>
+        </div>
+        <label class="toggle-row"><span><strong>Alerts</strong><small>A Windows notification when something stays too hot, memory stays nearly full, or a drive runs low on space. Works from the tray too.</small></span><input type="checkbox" class="switch" id="alertsOn"></label>
+        <div class="field-row alert-fields" id="alertFields">
+          <label class="field"><span>CPU above <b data-unit-temp>°C</b></span><input id="alertCpu" inputmode="numeric" autocomplete="off"></label>
+          <label class="field"><span>GPU above <b data-unit-temp>°C</b></span><input id="alertGpu" inputmode="numeric" autocomplete="off"></label>
+          <label class="field"><span>Memory above %</span><input id="alertRam" inputmode="numeric" autocomplete="off"></label>
+          <label class="field"><span>Drive free below %</span><input id="alertDisk" inputmode="numeric" autocomplete="off"></label>
+        </div>
+        <h3>Mini overlay</h3>
+        <label class="toggle-row"><span><strong>Show the overlay</strong><small>A small always-on-top window with your temperatures and usage. Drag it anywhere.</small></span><input type="checkbox" class="switch" id="overlayOn"></label>
+        <label class="toggle-row"><span><strong>Lock it in place</strong><small>Clicks go straight through to the game underneath</small></span><input type="checkbox" class="switch" id="overlayLock"></label>
+        <h3>Hotkeys</h3>
+        <p class="sheet-note">Click a box and press the keys you want. Backspace clears it.</p>
+        <div class="field-row">
+          <label class="field"><span>Open Lumora</span><input id="hotkeyOpen" class="hotkey" readonly autocomplete="off"></label>
+          <label class="field"><span>Show or hide the overlay</span><input id="hotkeyOverlay" class="hotkey" readonly autocomplete="off"></label>
+        </div>
+      </section>
+
+      <section class="sheet-section">
         <h3>Updates</h3>
         <div class="update-row">
           <p class="sheet-note" id="updateStatus">You're on Lumora 0.1.0.</p>

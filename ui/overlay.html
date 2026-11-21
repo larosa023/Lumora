@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lumora overlay</title>
+  <style>
+    @font-face { font-family: 'Sora'; src: url('fonts/sora.woff2') format('woff2'); font-weight: 100 800; }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    body { font: 12px 'Sora', 'Segoe UI', system-ui, sans-serif; color: #f2f1fa; user-select: none; -webkit-user-select: none; }
+    .card {
+      position: absolute; inset: 4px; border-radius: 14px; padding: 8px 12px 10px;
+      background: rgba(12, 11, 20, 0.82); border: 1px solid rgba(255, 255, 255, 0.09);
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .bar { display: flex; align-items: center; gap: 6px; height: 18px; font-size: 10.5px; color: #8f8ca6; cursor: grab; }
+    .bar span { flex: 1; }
+    .bar button { all: unset; width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; cursor: pointer; color: #8f8ca6; }
+    .bar button:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+    .bar svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .row { display: grid; grid-template-columns: 34px 1fr 1fr; align-items: baseline; gap: 6px; }
+    .row b { font-size: 10.5px; font-weight: 600; color: #8f8ca6; letter-spacing: 0.04em; }
+    .row span { font-size: 15px; font-weight: 640; font-variant-numeric: tabular-nums; text-align: right; }
+    .row small { font-size: 10.5px; color: #8f8ca6; font-weight: 500; }
+    .warn { color: #ffb547; } .hot { color: #ff7b88; }
+    .locked .bar button { display: none; }
+    .locked .bar { cursor: default; }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="bar" data-tauri-drag-region>
+      <span data-tauri-drag-region>Lumora</span>
+      <button id="lock" title="Lock in place (clicks go through)"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></button>
+      <button id="close" title="Hide the overlay"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="row" data-tauri-drag-region><b>CPU</b><span id="cpuT">–</span><span id="cpuU">–</span></div>
+    <div class="row" data-tauri-drag-region><b>GPU</b><span id="gpuT">–</span><span id="gpuU">–</span></div>
+    <div class="row" data-tauri-drag-region><b>RAM</b><span id="ramU">–</span><span id="ramG">–</span></div>
+    <div class="row" data-tauri-drag-region><b>NET</b><span id="down">–</span><span id="up">–</span></div>
+  </div>
+  <script type="module" src="js/overlay.js"></script>
+</body>
+</html>
