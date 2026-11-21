@@ -93,7 +93,9 @@ export function initCooling(context) {
   initTempChart(context.api);
   ctx = context;
   refreshCpu();
-  setInterval(refreshCpu, 4000);
+  setInterval(() => {
+    if (!document.hidden) refreshCpu();
+  }, 4000);
   document.addEventListener('click', (ev) => {
     const b = ev.target.closest('[data-cpu-setup]');
     if (b) setupCpu(b);

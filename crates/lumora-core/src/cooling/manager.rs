@@ -410,7 +410,7 @@ fn sources_of(model: &Model, ch: &ChannelSpec, cfg: &CoolerConfig) -> Vec<&'stat
 }
 
 /// The temperatures a channel could follow.
-fn choices(model: &Model, ch: &ChannelSpec) -> Vec<&'static str> {
+fn choices(model: &Model, _ch: &ChannelSpec) -> Vec<&'static str> {
     if let Some(f) = model.fixed_source() {
         vec![f]
     } else {

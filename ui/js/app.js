@@ -178,7 +178,12 @@ function renderSidebar() {
 function paintGlows() {
   for (const el of document.querySelectorAll('[data-glow]')) {
     const c = averageOf(state.lastColors.get(el.dataset.glow));
-    if (c) el.style.setProperty('--c', `${c[0] | 0} ${c[1] | 0} ${c[2] | 0}`);
+    if (!c) continue;
+    const v = `${c[0] | 0} ${c[1] | 0} ${c[2] | 0}`;
+    if (el.dataset.glowNow !== v) {
+      el.dataset.glowNow = v;
+      el.style.setProperty('--c', v);
+    }
   }
 }
 
@@ -492,6 +497,11 @@ function renderEffects() {
   if (!grid.children.length) {
     grid.innerHTML = state.app.effects.map((e) => `<button class="effect-tile" role="radio" data-effect="${e.id}" title="${esc(e.description)}">
       <canvas width="168" height="26"></canvas><span>${esc(e.name)}</span></button>`).join('');
+    // Thumbnails only animate while the grid is actually on screen.
+    new IntersectionObserver(([entry]) => {
+      tilesVisible = entry.isIntersecting;
+      startTiles();
+    }).observe(grid);
     grid.addEventListener('click', (ev) => {
       const t = ev.target.closest('[data-effect]');
       if (t) selectEffect(t.dataset.effect);
@@ -507,23 +517,51 @@ function renderEffects() {
 }
 
 let tileLast = performance.now();
+let tileDrawn = 0;
+let tileRaf = 0;
+let tilesVisible = false;
+// Thumbnails don't need the monitor's full refresh rate.
+const TILE_FRAME_MS = 33;
+
+function startTiles() {
+  if (!tileRaf && tilesVisible && !document.hidden) tileRaf = requestAnimationFrame(animateTiles);
+}
+
 function animateTiles(now) {
+  tileRaf = 0;
+  if (!tilesVisible || document.hidden) return;
+  if (now - tileDrawn < TILE_FRAME_MS) {
+    tileRaf = requestAnimationFrame(animateTiles);
+    return;
+  }
+  tileDrawn = now;
   const t = now / 1000, dt = Math.min((now - tileLast) / 1000, 0.1);
   tileLast = now;
-  if (!document.hidden) {
+  {
     for (const tile of state.tiles) {
       // Tiles sweep through a fake temperature so the effect reads at a glance.
       tile.render(t, dt, TILE_LEDS, tile.out, 32 + 14 * (0.5 + 0.5 * Math.sin(t * 0.7)));
-      const ctx = tile.canvas.getContext('2d');
-      const w = tile.canvas.width, h = tile.canvas.height, step = w / TILE_LEDS.length;
-      ctx.clearRect(0, 0, w, h);
+      // One row of pixels, stretched over the thumbnail: a single draw.
+      if (!tile.strip) {
+        tile.strip = document.createElement('canvas');
+        tile.strip.width = TILE_LEDS.length;
+        tile.strip.height = 1;
+        tile.px = tile.strip.getContext('2d').createImageData(TILE_LEDS.length, 1);
+        tile.ctx = tile.canvas.getContext('2d');
+        tile.ctx.imageSmoothingEnabled = false;
+      }
+      const d = tile.px.data;
       tile.out.forEach((c, i) => {
-        ctx.fillStyle = `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
-        ctx.fillRect(i * step, 0, step + 0.6, h);
+        d[i * 4] = c[0];
+        d[i * 4 + 1] = c[1];
+        d[i * 4 + 2] = c[2];
+        d[i * 4 + 3] = 255;
       });
+      tile.strip.getContext('2d').putImageData(tile.px, 0, 0);
+      tile.ctx.drawImage(tile.strip, 0, 0, tile.canvas.width, tile.canvas.height);
     }
   }
-  requestAnimationFrame(animateTiles);
+  tileRaf = requestAnimationFrame(animateTiles);
 }
 
 // --- Inspector --------------------------------------------------------------
@@ -823,8 +861,10 @@ function applyTheme() {
 
 // Every few frames, tint the stage (and optionally the accent) from the lights.
 let lastAmbient = 0;
+let lastTint = null;
+let lastAccent = '';
 function updateAmbient(now) {
-  if (now - lastAmbient < 120) return;
+  if (now - lastAmbient < 500) return;
   lastAmbient = now;
   const ids = state.selected ? [state.selected] : [...state.views.keys()];
   let r = 0, g = 0, b = 0, n = 0;
@@ -844,11 +884,19 @@ function updateAmbient(now) {
   // Boost so dim scenes still read, without blowing out bright ones.
   const peak = Math.max(...avg, 1);
   const k = Math.min(255 / peak, 3) * 0.9;
-  document.documentElement.style.setProperty('--ambient', avg.map((v) => Math.round(Math.min(v * k, 255))).join(' '));
+  const tint = avg.map((v) => Math.round(Math.min(v * k, 255) / 6) * 6);
+  if (!lastTint || tint.some((v, i) => Math.abs(v - lastTint[i]) >= 6)) {
+    lastTint = tint;
+    document.documentElement.style.setProperty('--ambient', tint.join(' '));
+  }
   if (state.app.settings.accent_follows_lighting && vivid && vividScore > 4000) {
-    followed = followed ? followed.map((v, i) => v + (vivid[i] - v) * 0.25) : vivid.slice();
+    followed = followed ? followed.map((v, i) => v + (vivid[i] - v) * 0.5) : vivid.slice();
     const m = Math.max(...followed, 1), boost = 230 / m;
-    document.documentElement.style.setProperty('--accent', `rgb(${followed.map((v) => Math.round(Math.min(v * boost, 255))).join(',')})`);
+    const accent = `rgb(${followed.map((v) => Math.round(Math.min(v * boost, 255) / 6) * 6).join(',')})`;
+    if (accent !== lastAccent) {
+      lastAccent = accent;
+      document.documentElement.style.setProperty('--accent', accent);
+    }
   }
 }
 
@@ -1164,7 +1212,7 @@ function onFrames(frames) {
   }
   const now = performance.now();
   updateAmbient(now);
-  if (now - glowTimer > 150) {
+  if (now - glowTimer > 400) {
     glowTimer = now;
     paintGlows();
   }
@@ -1198,7 +1246,7 @@ async function init() {
   restoreSelection();
   renderAll();
   renderProfileName();
-  requestAnimationFrame(animateTiles);
+  document.addEventListener('visibilitychange', startTiles);
 
   await api.listen('lumora://changed', (e) => onSnapshot(e.payload));
   await api.listen('lumora://frames', (e) => onFrames(e.payload));

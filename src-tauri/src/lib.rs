@@ -32,6 +32,8 @@ struct App {
     /// The lighting changed since the session was last written to disk.
     dirty: AtomicBool,
     tray_toggle: Mutex<Option<MenuItem<Wry>>>,
+    /// The window was just closed to the tray (so the app keeps running).
+    window_closed: AtomicBool,
 }
 
 impl App {
@@ -583,8 +585,22 @@ fn spawn_update_checks(handle: AppHandle) {
     });
 }
 
+/// Shows the window, building it first if it isn't there. Closing to the
+/// tray destroys the window (and the web view's memory with it), so it's
+/// rebuilt here from the app config whenever it's opened again.
 fn show_main(handle: &AppHandle) {
-    if let Some(w) = handle.get_webview_window("main") {
+    let window = match handle.get_webview_window("main") {
+        Some(w) => Some(w),
+        None => handle
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|w| w.label == "main")
+            .and_then(|cfg| tauri::WebviewWindowBuilder::from_config(handle, cfg).ok())
+            .and_then(|b| b.build().ok()),
+    };
+    if let Some(w) = window {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
@@ -731,6 +747,7 @@ pub fn run() {
                 active_profile: Mutex::new(active_profile),
                 dirty: AtomicBool::new(false),
                 tray_toggle: Mutex::new(None),
+                window_closed: AtomicBool::new(false),
             });
 
             let toggle = build_tray(&handle)?;
@@ -759,9 +776,17 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.state::<App>();
                 if app.settings.lock().unwrap().close_to_tray {
-                    api.prevent_close();
-                    let _ = window.hide();
+                    // Let the window close: its web view (most of Lumora's
+                    // memory) is freed, and the app keeps running in the tray.
+                    // `show_main` builds it again when it's opened.
+                    let _ = api;
+                    use tauri_plugin_window_state::AppHandleExt;
+                    let _ = window.app_handle().save_window_state(
+                        tauri_plugin_window_state::StateFlags::all()
+                            - tauri_plugin_window_state::StateFlags::VISIBLE,
+                    );
                     app.engine.set_preview(false);
+                    app.window_closed.store(true, Ordering::SeqCst);
                 }
             }
         })
@@ -800,6 +825,15 @@ pub fn run() {
         .expect("failed to start Lumora");
 
     app.run(|handle, event| {
+        // Closing the window to the tray isn't quitting: keep running.
+        if let RunEvent::ExitRequested { code: None, api, .. } = &event {
+            if let Some(app) = handle.try_state::<App>() {
+                if app.window_closed.swap(false, Ordering::SeqCst) {
+                    api.prevent_exit();
+                    return;
+                }
+            }
+        }
         if let RunEvent::Exit = event {
             use tauri_plugin_window_state::AppHandleExt;
             let _ = handle.save_window_state(tauri_plugin_window_state::StateFlags::all() - tauri_plugin_window_state::StateFlags::VISIBLE);

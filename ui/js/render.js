@@ -253,6 +253,9 @@ export class DeviceView {
     this.padding = padding;
     this.bloom = bloom;
     this.glow = document.createElement('canvas');
+    // The parts that never change (body, key outlines), drawn once.
+    this.base = document.createElement('canvas');
+    this.baseReady = false;
     this.colors = new Array(device.led_count).fill([0, 0, 0]);
     this.pal = palette();
     this.resize();
@@ -260,6 +263,7 @@ export class DeviceView {
 
   refreshTheme() {
     this.pal = palette();
+    this.baseReady = false;
     this.draw();
   }
 
@@ -276,6 +280,7 @@ export class DeviceView {
     this.oy = (this.canvas.height - h * this.scale) / 2;
     this.glow.width = Math.max(1, Math.round(this.canvas.width / 10));
     this.glow.height = Math.max(1, Math.round(this.canvas.height / 10));
+    this.baseReady = false;
     this.draw();
   }
 
@@ -292,15 +297,17 @@ export class DeviceView {
     return [r / n, g / n, b / n];
   }
 
-  drawLeds(ctx, keyAlpha) {
+  /** `glow`: the bloom pass, which only needs the lit LEDs. */
+  drawLeds(ctx, keyAlpha, glow = false) {
     for (const l of this.layout.leds) {
       const c = this.colors[l.i] || [0, 0, 0];
-      const lum = Math.max(c[0], c[1], c[2]);
+      const lum = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : c[1] > c[2] ? c[1] : c[2];
+      if (glow && lum <= 2) continue;
       const fill = `rgb(${c[0]},${c[1]},${c[2]})`;
-      if (l.key) {
-        ctx.fillStyle = this.pal.detail;
-        roundRect(ctx, l.x, l.y, l.w, l.h, 0.16);
-        ctx.fill();
+      if (l.key && glow) {
+        ctx.fillStyle = fill;
+        ctx.fillRect(l.x + 0.08, l.y + 0.08, l.w - 0.16, l.h - 0.16);
+      } else if (l.key) {
         if (lum > 2) {
           ctx.globalAlpha = keyAlpha;
           ctx.fillStyle = fill;
@@ -321,6 +328,28 @@ export class DeviceView {
     }
   }
 
+  /** Body, bar and key outlines: redrawn only on resize or theme change. */
+  drawBase() {
+    const { canvas, layout, base } = this;
+    base.width = canvas.width;
+    base.height = canvas.height;
+    const b = base.getContext('2d');
+    b.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy);
+    layout.decor(b, this.pal);
+    if (layout.bar) {
+      b.fillStyle = this.pal.detail;
+      roundRect(b, layout.bar.x, layout.bar.y, layout.bar.w, layout.bar.h, layout.bar.h / 2);
+      b.fill();
+    }
+    b.fillStyle = this.pal.detail;
+    for (const l of layout.leds) {
+      if (!l.key) continue;
+      roundRect(b, l.x, l.y, l.w, l.h, 0.16);
+      b.fill();
+    }
+    this.baseReady = true;
+  }
+
   draw() {
     const { ctx, canvas, layout } = this;
     if (!canvas.width) return;
@@ -335,7 +364,7 @@ export class DeviceView {
       g.clearRect(0, 0, this.glow.width, this.glow.height);
       const k = this.glow.width / canvas.width;
       g.setTransform(this.scale * k, 0, 0, this.scale * k, this.ox * k, this.oy * k);
-      this.drawLeds(g, 1);
+      this.drawLeds(g, 1, true);
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       ctx.globalAlpha = 0.9 * this.bloom;
@@ -346,23 +375,18 @@ export class DeviceView {
       ctx.restore();
     }
 
-    ctx.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy);
-    layout.decor(ctx, this.pal);
+    if (!this.baseReady) this.drawBase();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(this.base, 0, 0);
     // Keys glow onto the gaps around them: a second, softer bloom over the body.
     if (this.bloom > 0 && layout.leds[0]?.key) {
       ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalCompositeOperation = 'lighter';
       ctx.globalAlpha = 0.35 * this.bloom;
       ctx.drawImage(this.glow, 0, 0, canvas.width, canvas.height);
       ctx.restore();
-      ctx.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy);
     }
-    if (layout.bar) {
-      ctx.fillStyle = this.pal.detail;
-      roundRect(ctx, layout.bar.x, layout.bar.y, layout.bar.w, layout.bar.h, layout.bar.h / 2);
-      ctx.fill();
-    }
+    ctx.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy);
     this.drawLeds(ctx, 0.92);
   }
 }

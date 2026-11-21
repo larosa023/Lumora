@@ -43,7 +43,7 @@ export async function refreshTempChart(force = false) {
     resizeBound = true;
     window.addEventListener('resize', () => draw());
   }
-  draw();
+  if (!box.firstChild) draw();
   if (!api || fetching || (!force && Date.now() - fetchedAt < FETCH_EVERY)) return;
   fetching = true;
   try {

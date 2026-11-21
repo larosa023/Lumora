@@ -152,6 +152,9 @@ impl Shared {
     }
 }
 
+/// How often the window's live preview gets new colors (20 a second).
+const PREVIEW_EVERY: Duration = Duration::from_millis(50);
+
 pub struct Engine {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -477,6 +480,7 @@ fn drop_real_devices(shared: &Shared) {
 fn run(shared: Arc<Shared>) {
     let start = Instant::now();
     let mut last = start;
+    let mut last_preview = start.checked_sub(PREVIEW_EVERY).unwrap_or(start);
     let mut conn = Conn::Idle;
     let mut next_attempt = Instant::now();
     let mut failures = 0u32;
@@ -638,7 +642,12 @@ fn run(shared: Arc<Shared>) {
 
             let mut animating = fading;
             let lighting = &s.lighting;
-            let preview = s.preview;
+            // The window's live preview needs far fewer frames than the
+            // hardware: capped, so drawing it costs little.
+            let preview = s.preview && now.duration_since(last_preview) >= PREVIEW_EVERY;
+            if preview {
+                last_preview = now;
+            }
             let settings = &s.settings;
             for d in s.real.iter_mut().chain(s.demo.iter_mut()) {
                 // Left to its own app (NZXT CAM, …): send nothing at all.

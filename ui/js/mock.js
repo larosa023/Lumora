@@ -210,7 +210,7 @@ setInterval(() => {
     frames[r.dev.id] = btoa(bin);
   }
   if (preview) emit('lumora://frames', frames);
-}, 1000 / 30);
+}, 1000 / 20);
 
 function mockTemp(source) {
   return state.temps.find((x) => x.source === source)?.celsius ?? null;
