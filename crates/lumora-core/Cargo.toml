@@ -15,6 +15,7 @@ usb = ["dep:rusb"]
 serde.workspace = true
 serde_json.workspace = true
 libloading = "0.8"
+png = "0.18"
 hidapi = { version = "2.6", optional = true, default-features = false, features = ["linux-native-basic-udev", "windows-native", "macos-shared-device"] }
 rusb = { version = "0.9", optional = true, features = ["vendored"] }
 
@@ -22,10 +23,12 @@ rusb = { version = "0.9", optional = true, features = ["vendored"] }
 windows-sys = { version = "0.61", features = [
     "Wdk_System_SystemInformation",
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_Ioctl",

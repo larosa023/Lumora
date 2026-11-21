@@ -109,6 +109,48 @@ pub async fn process_action(host: Host<'_>, pid: u32, action: String, value: Opt
     .await?
 }
 
+/// Icons already looked up (path → PNG data URL, or none).
+#[derive(Default)]
+pub struct IconCache(Mutex<std::collections::HashMap<String, Option<String>>>);
+
+/// Program icons for a list of files, as data URLs (`None`: no icon).
+#[tauri::command]
+pub async fn app_icons(cache: State<'_, IconCache>, paths: Vec<String>) -> CmdResult<std::collections::HashMap<String, Option<String>>> {
+    let mut out = std::collections::HashMap::new();
+    let mut missing = Vec::new();
+    {
+        let c = cache.0.lock().unwrap();
+        for p in paths.into_iter().take(400) {
+            match c.get(&p) {
+                Some(v) => {
+                    out.insert(p, v.clone());
+                }
+                None => missing.push(p),
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let found = blocking(move || {
+            use base64::Engine;
+            missing
+                .into_iter()
+                .map(|p| {
+                    let url = monitor::icons::icon_png(&p)
+                        .map(|png| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)));
+                    (p, url)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await?;
+        let mut c = cache.0.lock().unwrap();
+        for (p, url) in found {
+            c.insert(p.clone(), url.clone());
+            out.insert(p, url);
+        }
+    }
+    Ok(out)
+}
+
 // ---- Startup apps & services ----------------------------------------------
 
 #[tauri::command]

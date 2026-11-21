@@ -166,6 +166,7 @@ export function systemMock(emit, getSettings) {
     },
     system_snapshot: () => ({ sample: latest, sensors: sensors(latest) }),
     process_action: () => {},
+    app_icons: () => ({}),
     startup_list: () => structuredClone(startup),
     startup_set: ({ id, on }) => {
       const i = startup.find((x) => x.id === id);

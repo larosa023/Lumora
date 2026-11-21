@@ -556,7 +556,7 @@ function entries(rows) {
     const key = `${group}|${r.name.toLowerCase()}`;
     let e = by.get(key);
     if (!e) {
-      e = { key, group, name: r.name, label: r.description || r.name, rows: [], cpu: 0, memory: 0, disk: 0, gpu: 0 };
+      e = { key, group, name: r.name, label: r.description || r.name, path: r.path, rows: [], cpu: 0, memory: 0, disk: 0, gpu: 0 };
       by.set(key, e);
     }
     e.rows.push(r);
@@ -565,6 +565,7 @@ function entries(rows) {
     e.disk += r.disk;
     e.gpu = Math.max(e.gpu, r.gpu);
     if (r.group === 'app' && r.description) e.label = r.description;
+    if (!e.path && r.path) e.path = r.path;
   }
   return [...by.values()];
 }
@@ -578,7 +579,33 @@ function sorter() {
   return (a, b) => dir * (a[key] - b[key]) || a.label.localeCompare(b.label);
 }
 
+// Real program icons, asked for once per file and kept for the session.
+const icons = new Map(); // path → data URL, or null (no icon)
+const wantIcons = new Set();
+let iconTimer = 0;
+function iconFor(path) {
+  if (!path) return null;
+  if (icons.has(path)) return icons.get(path);
+  wantIcons.add(path);
+  if (!iconTimer) {
+    iconTimer = setTimeout(async () => {
+      iconTimer = 0;
+      const paths = [...wantIcons];
+      wantIcons.clear();
+      for (const p of paths) icons.set(p, null);
+      try {
+        const got = await ctx.api.invoke('app_icons', { paths });
+        for (const [p, url] of Object.entries(got || {})) icons.set(p, url || null);
+      } catch { /* letters it is */ }
+      if (sys.page) update();
+    }, 30);
+  }
+  return null;
+}
+
 function avatar(e) {
+  const url = iconFor(e.path);
+  if (url) return `<img class="proc-icon" src="${url}" alt="" draggable="false">`;
   const letter = (e.label || e.name || '?').trim()[0]?.toUpperCase() || '?';
   let h = 0;
   for (const ch of e.name) h = (h * 31 + ch.charCodeAt(0)) % 360;
@@ -706,7 +733,7 @@ function updateStartup() {
   put('startup', `${helperNote(sys.error.startupSet, 'switch apps that start for every user')}
     <p class="hint">${on} of ${list.length} start with Windows. Switching one off doesn't uninstall it; it just won't open on its own.</p>
     <div class="sys-list">${list.map((i) => `<label class="sys-item">
-      ${avatar({ name: i.name, label: i.description || i.name })}
+      ${avatar({ name: i.name, label: i.description || i.name, path: i.path })}
       <span class="sys-item-text"><strong>${esc(i.description || i.name)}</strong><small title="${esc(i.command)}">${esc(i.path || i.command)}</small></span>
       <span class="nav-badge muted" title="${i.admin ? 'Changing it needs Lumora\'s helper' : ''}">${esc(i.location)}</span>
       <input type="checkbox" class="switch small" data-sys-startup="${esc(i.id)}" ${i.enabled ? 'checked' : ''} aria-label="Start ${esc(i.name)} with Windows">

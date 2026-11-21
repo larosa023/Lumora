@@ -704,6 +704,7 @@ pub fn run() {
         .manage(Updates::default())
         .manage(system::TrayItems::default())
         .manage(system::Hotkeys::default())
+        .manage(system::IconCache::default())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -886,6 +887,7 @@ pub fn run() {
             system::monitor_watch,
             system::system_snapshot,
             system::process_action,
+            system::app_icons,
             system::startup_list,
             system::startup_set,
             system::services_list,

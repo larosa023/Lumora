@@ -10,6 +10,7 @@
 pub mod admin;
 pub mod alerts;
 pub mod history;
+pub mod icons;
 pub mod power;
 pub mod processes;
 pub mod services;

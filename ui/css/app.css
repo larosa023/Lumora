@@ -2544,3 +2544,4 @@ input[type='range']:focus-visible::-webkit-slider-thumb {
 .sys-page .segmented.compact button { white-space: nowrap; }
 .unit-grid .segmented button { white-space: nowrap; }
 .sys-sensors .sys-table th, .sys-sensors .sys-table td { padding-left: 6px; padding-right: 6px; }
+.proc-icon { width: 20px; height: 20px; margin: 0 8px 0 2px; vertical-align: middle; object-fit: contain; }
