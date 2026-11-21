@@ -60,7 +60,7 @@ pub fn render_colors(colors: &[String], w: usize, h: usize) -> Vec<u8> {
 
 /// Draws `text` onto RGBA `img` (`size` wide), its top-left at `(x, y)`,
 /// `h` pixels tall, in `color`.
-fn draw_text(
+pub(crate) fn draw_text(
     img: &mut [u8],
     size: usize,
     text: &str,
@@ -124,7 +124,7 @@ fn draw_text(
 }
 
 /// Width of `text` drawn `h` pixels tall.
-fn text_width(text: &str, h: f32, gap: f32) -> f32 {
+pub(crate) fn text_width(text: &str, h: f32, gap: f32) -> f32 {
     let n = text.chars().count() as f32;
     text.chars().map(|c| glyphs::glyph(c).1).sum::<f32>() * h + gap * h * (n - 1.0).max(0.0)
 }

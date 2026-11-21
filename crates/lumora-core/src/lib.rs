@@ -16,6 +16,7 @@ pub mod device;
 pub mod effects;
 pub mod engine;
 pub mod mock;
+pub mod monitor;
 pub mod openrgb;
 pub mod store;
 pub mod system;

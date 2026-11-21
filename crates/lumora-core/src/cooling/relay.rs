@@ -108,6 +108,8 @@ pub fn serve(stream: TcpStream, backend: &Mutex<Box<dyn Backend>>, key_file: &Pa
             a
         } else if let Some(a) = super::board::serve_command(conn, cmd, arg) {
             a
+        } else if let Some(a) = crate::monitor::admin::serve_command(cmd, arg) {
+            a
         } else {
             match cmd {
                 // Lumora checks this to know when the helper needs updating.

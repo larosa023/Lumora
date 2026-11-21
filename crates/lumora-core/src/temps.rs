@@ -289,6 +289,54 @@ pub mod gpu {
             code
         }
 
+        /// GPU and memory-controller busy, in percent.
+        pub fn utilization(&self) -> Option<(u32, u32)> {
+            type F = unsafe extern "C" fn(*mut std::ffi::c_void, *mut [u32; 2]) -> i32;
+            let f = self.sym::<F>(b"nvmlDeviceGetUtilizationRates\0")?;
+            let mut v = [0u32; 2];
+            // SAFETY: NVML fills the two counters it's given.
+            (unsafe { f(self.device, &mut v) } == 0).then_some((v[0], v[1]))
+        }
+
+        /// Video memory (total, used), in bytes.
+        pub fn memory(&self) -> Option<(u64, u64)> {
+            type F = unsafe extern "C" fn(*mut std::ffi::c_void, *mut [u64; 3]) -> i32;
+            let f = self.sym::<F>(b"nvmlDeviceGetMemoryInfo\0")?;
+            let mut v = [0u64; 3]; // total, free, used
+                                   // SAFETY: NVML fills the struct it's given.
+            (unsafe { f(self.device, &mut v) } == 0).then_some((v[0], v[2]))
+        }
+
+        /// A clock in MHz: 0 = graphics, 2 = memory.
+        pub fn clock(&self, which: u32) -> Option<u32> {
+            type F = unsafe extern "C" fn(*mut std::ffi::c_void, u32, *mut u32) -> i32;
+            let f = self.sym::<F>(b"nvmlDeviceGetClockInfo\0")?;
+            let mut v = 0u32;
+            // SAFETY: see `open`.
+            (unsafe { f(self.device, which, &mut v) } == 0).then_some(v)
+        }
+
+        /// Board power draw, in watts.
+        pub fn power(&self) -> Option<f32> {
+            type F = unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32) -> i32;
+            let f = self.sym::<F>(b"nvmlDeviceGetPowerUsage\0")?;
+            let mut mw = 0u32;
+            // SAFETY: see `open`.
+            (unsafe { f(self.device, &mut mw) } == 0).then_some(mw as f32 / 1000.0)
+        }
+
+        pub fn driver_version(&self) -> Option<String> {
+            type F = unsafe extern "C" fn(*mut u8, u32) -> i32;
+            // SAFETY: a symbol of this exact type, on a loaded library.
+            let f: Symbol<'_, F> = unsafe { self.lib.get(b"nvmlSystemGetDriverVersion\0").ok()? };
+            let mut buf = [0u8; 96];
+            // SAFETY: the buffer is as long as we say.
+            (unsafe { f(buf.as_mut_ptr(), buf.len() as u32) } == 0).then(|| {
+                let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                String::from_utf8_lossy(&buf[..end]).trim().to_string()
+            })
+        }
+
         pub fn temperature(&self) -> Option<f32> {
             // SAFETY: see `open`. 0 = NVML_TEMPERATURE_GPU.
             unsafe {
