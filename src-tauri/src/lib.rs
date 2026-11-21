@@ -2,6 +2,8 @@
 //! All the lighting work happens in `lumora-core`.
 
 mod engine_host;
+mod monitor_host;
+mod system;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,14 +18,14 @@ use lumora_core::engine::EngineEvent;
 use lumora_core::store::Store;
 use lumora_core::{EffectConfig, EffectDescriptor, Engine, Profile, Settings, Snapshot};
 use serde::Serialize;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-struct App {
+pub(crate) struct App {
     engine: Engine,
     store: Store,
     settings: Mutex<Settings>,
@@ -99,8 +101,8 @@ fn get_state(app: State<App>, host: State<Arc<EngineHost>>, cooling: State<Cooli
 
 /// The last half hour of temperature readings, for the chart.
 #[tauri::command]
-fn temp_history() -> Vec<lumora_core::temps::HistoryPoint> {
-    lumora_core::temps::history()
+fn temp_history(monitor: State<Arc<monitor_host::MonitorHost>>) -> Vec<lumora_core::temps::HistoryPoint> {
+    system::temp_history(&monitor)
 }
 
 /// Saves and applies one cooler's settings (takeover, curves, screen).
@@ -276,7 +278,7 @@ fn delete_profile(app: State<App>, name: String) -> CmdResult<Vec<Profile>> {
 }
 
 #[tauri::command]
-fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Settings) -> CmdResult<Settings> {
+fn update_settings(handle: AppHandle, app: State<App>, host: State<Arc<EngineHost>>, settings: Settings) -> CmdResult<Settings> {
     let mut before = None;
     let settings = app.edit_settings(|s| {
         before = Some(s.clone());
@@ -287,6 +289,15 @@ fn update_settings(app: State<App>, host: State<Arc<EngineHost>>, settings: Sett
         host.apply(settings.builtin_engine, &settings.host);
     }
     app.engine.apply_settings(settings.clone());
+    if before.hotkeys != settings.hotkeys {
+        let failed = system::register_hotkeys(&handle);
+        if !failed.is_empty() {
+            return Err(format!("Another app is already using {}", failed.join(" and ")));
+        }
+    }
+    if before.tray_icon != settings.tray_icon && settings.tray_icon == "logo" {
+        system::set_tray_icon(&handle, None);
+    }
     Ok(settings)
 }
 
@@ -588,7 +599,7 @@ fn spawn_update_checks(handle: AppHandle) {
 /// Shows the window, building it first if it isn't there. Closing to the
 /// tray destroys the window (and the web view's memory with it), so it's
 /// rebuilt here from the app config whenever it's opened again.
-fn show_main(handle: &AppHandle) {
+pub(crate) fn show_main(handle: &AppHandle) {
     let window = match handle.get_webview_window("main") {
         Some(w) => Some(w),
         None => handle
@@ -613,8 +624,26 @@ fn show_main(handle: &AppHandle) {
 fn build_tray(handle: &AppHandle) -> tauri::Result<MenuItem<Wry>> {
     let show = MenuItem::with_id(handle, "show", "Open Lumora", true, None::<&str>)?;
     let toggle = MenuItem::with_id(handle, "toggle", "Turn lights off", true, None::<&str>)?;
+    let overlay = MenuItem::with_id(handle, "overlay", "Show overlay", true, None::<&str>)?;
+    let plans: Vec<(String, CheckMenuItem<Wry>)> = lumora_core::monitor::power::plans()
+        .into_iter()
+        .filter_map(|p| {
+            CheckMenuItem::with_id(handle, format!("plan:{}", p.id), &p.name, true, p.active, None::<&str>)
+                .ok()
+                .map(|i| (p.id, i))
+        })
+        .collect();
+    let plan_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> = plans.iter().map(|(_, i)| i as &dyn tauri::menu::IsMenuItem<Wry>).collect();
+    let power = Submenu::with_items(handle, "Power plan", !plans.is_empty(), &plan_refs)?;
     let quit = MenuItem::with_id(handle, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(handle, &[&show, &toggle, &PredefinedMenuItem::separator(handle)?, &quit])?;
+    let menu = Menu::with_items(
+        handle,
+        &[&show, &toggle, &overlay, &power, &PredefinedMenuItem::separator(handle)?, &quit],
+    )?;
+    if let Some(items) = handle.try_state::<system::TrayItems>() {
+        *items.overlay.lock().unwrap() = Some(overlay.clone());
+        *items.plans.lock().unwrap() = plans.clone();
+    }
     let mut tray = TrayIconBuilder::with_id("lumora")
         .tooltip("Lumora")
         .menu(&menu)
@@ -630,11 +659,24 @@ fn build_tray(handle: &AppHandle) -> tauri::Result<MenuItem<Wry>> {
                 }
             }
             "quit" => h.exit(0),
-            _ => {}
+            "overlay" => system::set_overlay(h, !system::overlay_shown(h)),
+            id => {
+                if let Some(plan) = id.strip_prefix("plan:") {
+                    let _ = lumora_core::monitor::power::set_plan(plan);
+                    system::sync_plan_checks(h, &lumora_core::monitor::power::plans());
+                }
+            }
         })
         .on_tray_icon_event(|tray, e| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
-                show_main(tray.app_handle());
+            match e {
+                TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
+                    show_main(tray.app_handle());
+                }
+                // The plan may have been changed elsewhere: tick the right one.
+                TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Down, .. } => {
+                    system::sync_plan_checks(tray.app_handle(), &lumora_core::monitor::power::plans());
+                }
+                _ => {}
             }
         });
     if let Some(icon) = handle.default_window_icon() {
@@ -656,7 +698,11 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(system::hotkey_plugin())
         .manage(Updates::default())
+        .manage(system::TrayItems::default())
+        .manage(system::Hotkeys::default())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .setup(|app| {
             let handle = app.handle().clone();
@@ -730,7 +776,9 @@ pub fn run() {
             app.manage(cooling);
             lumora_core::temps::gpu::start_polling();
             lumora_core::temps::cpu::start_polling();
-            lumora_core::temps::start_history();
+            let monitor = monitor_host::MonitorHost::new(app.path().app_config_dir().ok().map(|d| d.join("history")), relay_key.clone());
+            monitor.start(handle.clone());
+            app.manage(monitor);
             let temp_events = handle.clone();
             std::thread::spawn(move || loop {
                 let _ = temp_events.emit("lumora://temps", lumora_core::temps::all());
@@ -766,6 +814,13 @@ pub fn run() {
             });
 
             spawn_update_checks(handle.clone());
+            let failed = system::register_hotkeys(&handle);
+            if !failed.is_empty() {
+                eprintln!("hotkeys in use elsewhere: {failed:?}");
+            }
+            if handle.state::<App>().settings.lock().unwrap().overlay.shown {
+                system::set_overlay(&handle, true);
+            }
 
             if !start_hidden {
                 show_main(&handle);
@@ -773,9 +828,23 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "overlay" {
+                if let WindowEvent::Destroyed = event {
+                    if let Some(h) = window.try_state::<Arc<monitor_host::MonitorHost>>() {
+                        h.watch("overlay", false);
+                    }
+                }
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.state::<App>();
-                if app.settings.lock().unwrap().close_to_tray {
+                if let Some(h) = window.try_state::<Arc<monitor_host::MonitorHost>>() {
+                    h.window_closed();
+                }
+                if !app.settings.lock().unwrap().close_to_tray {
+                    // Closing the window quits, even with the overlay open.
+                    window.app_handle().exit(0);
+                } else {
                     // Let the window close: its web view (most of Lumora's
                     // memory) is freed, and the app keeps running in the tray.
                     // `show_main` builds it again when it's opened.
@@ -813,6 +882,23 @@ pub fn run() {
             set_device_control,
             set_cooler_config,
             temp_history,
+            system::monitor_watch,
+            system::system_snapshot,
+            system::process_action,
+            system::startup_list,
+            system::startup_set,
+            system::services_list,
+            system::service_action,
+            system::service_start_type,
+            system::storage_info,
+            system::specs,
+            system::power_plans,
+            system::set_power_plan,
+            system::free_memory,
+            system::history_range,
+            system::history_export,
+            system::overlay_toggle,
+            system::overlay_lock,
             diagnostic_report,
             set_launch_at_login,
             open_external,
@@ -828,7 +914,8 @@ pub fn run() {
         // Closing the window to the tray isn't quitting: keep running.
         if let RunEvent::ExitRequested { code: None, api, .. } = &event {
             if let Some(app) = handle.try_state::<App>() {
-                if app.window_closed.swap(false, Ordering::SeqCst) {
+                app.window_closed.store(false, Ordering::SeqCst);
+                if app.settings.lock().unwrap().close_to_tray {
                     api.prevent_exit();
                     return;
                 }
@@ -845,6 +932,9 @@ pub fn run() {
             }
             if let Some(cooling) = handle.try_state::<CoolingManager>() {
                 cooling.shutdown();
+            }
+            if let Some(m) = handle.try_state::<Arc<monitor_host::MonitorHost>>() {
+                m.stop();
             }
             lumora_core::cooling::usb::stop_companions();
         }
