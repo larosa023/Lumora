@@ -329,6 +329,10 @@ pub fn temp_history(host: &MonitorHost) -> Vec<lumora_core::temps::HistoryPoint>
 
 // ---- The overlay -------------------------------------------------------------
 
+/// The overlay's size: readings on top, the temperature chart below.
+const OVERLAY_W: f64 = 236.0;
+const OVERLAY_H: f64 = 282.0;
+
 pub fn overlay_shown(handle: &AppHandle) -> bool {
     handle.get_webview_window("overlay").is_some()
 }
@@ -343,7 +347,7 @@ pub fn set_overlay(handle: &AppHandle, show: bool) {
         if handle.get_webview_window("overlay").is_none() {
             let built = tauri::WebviewWindowBuilder::new(handle, "overlay", tauri::WebviewUrl::App("overlay.html".into()))
                 .title("Lumora overlay")
-                .inner_size(232.0, 170.0)
+                .inner_size(OVERLAY_W, OVERLAY_H)
                 .resizable(false)
                 .decorations(false)
                 .transparent(true)
@@ -353,6 +357,8 @@ pub fn set_overlay(handle: &AppHandle, show: bool) {
                 .focused(false)
                 .build();
             if let Ok(w) = built {
+                // A size remembered from an older, shorter overlay doesn't apply.
+                let _ = w.set_size(tauri::LogicalSize::new(OVERLAY_W, OVERLAY_H));
                 let _ = w.set_ignore_cursor_events(locked);
             }
         }

@@ -22,7 +22,18 @@
     .row span { font-size: 15px; font-weight: 640; font-variant-numeric: tabular-nums; text-align: right; }
     .row small { font-size: 10.5px; color: #8f8ca6; font-weight: 500; }
     .warn { color: #ffb547; } .hot { color: #ff7b88; }
-    .locked .bar button { display: none; }
+    .chart { margin-top: 4px; padding-top: 7px; border-top: 1px solid rgba(255, 255, 255, 0.07); display: flex; flex-direction: column; gap: 4px; }
+    .chart-head { display: flex; align-items: center; gap: 6px; font-size: 9.5px; color: #8f8ca6; white-space: nowrap; }
+    .keys { display: flex; gap: 7px; }
+    .chart-head .key { display: inline-flex; align-items: center; gap: 4px; }
+    .chart-head .key i { width: 7px; height: 7px; border-radius: 50%; }
+    .chart-head .span { margin-left: auto; all: unset; margin-left: auto; cursor: pointer; padding: 1px 6px; border-radius: 5px; background: rgba(255, 255, 255, 0.07); font-size: 10px; }
+    .chart-head .span:hover { background: rgba(255, 255, 255, 0.14); color: #fff; }
+    #chart { width: 100%; height: 92px; display: block; }
+    #chart path { fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+    #chart line { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .scale { display: flex; justify-content: space-between; font-size: 9.5px; color: #6f6c86; font-variant-numeric: tabular-nums; }
+    .locked .bar button, .locked .chart-head .span { display: none; }
     .locked .bar { cursor: default; }
   </style>
 </head>
@@ -37,6 +48,11 @@
     <div class="row" data-tauri-drag-region><b>GPU</b><span id="gpuT">–</span><span id="gpuU">–</span></div>
     <div class="row" data-tauri-drag-region><b>RAM</b><span id="ramU">–</span><span id="ramG">–</span></div>
     <div class="row" data-tauri-drag-region><b>NET</b><span id="down">–</span><span id="up">–</span></div>
+    <div class="chart" data-tauri-drag-region>
+      <div class="chart-head" data-tauri-drag-region><span id="keys" class="keys" data-tauri-drag-region></span><button class="span" id="span" title="Switch between the last 5 and 10 minutes">10m</button></div>
+      <svg id="chart" viewBox="0 0 200 92" preserveAspectRatio="none" aria-label="Temperatures" data-tauri-drag-region></svg>
+      <div class="scale" data-tauri-drag-region><span id="ago">10 min ago</span><span id="range"></span><span>now</span></div>
+    </div>
   </div>
   <script type="module" src="js/overlay.js"></script>
 </body>
