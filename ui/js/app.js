@@ -213,7 +213,49 @@ function restoreSelection() {
   return true;
 }
 
-function select(id) {
+// --- Back and forward ---------------------------------------------------------------
+// The mouse's back/forward buttons (and Alt+Left / Alt+Right) step through
+// the pages you've opened, like a browser.
+
+const nav = { back: [], forward: [] };
+
+function goBack() {
+  // An open dialog or menu closes first.
+  const open = document.querySelector('dialog[open]');
+  if (open) return open.close();
+  const id = nav.back.pop();
+  if (!id) return;
+  if (state.selected) nav.forward.push(state.selected);
+  select(id, true);
+}
+
+function goForward() {
+  const id = nav.forward.pop();
+  if (!id) return;
+  if (state.selected) nav.back.push(state.selected);
+  select(id, true);
+}
+
+// Stop WebView2 treating the buttons as its own page navigation.
+for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+  document.addEventListener(type, (ev) => {
+    if (ev.button !== 3 && ev.button !== 4) return;
+    ev.preventDefault();
+    if (type === 'mouseup') (ev.button === 3 ? goBack : goForward)();
+  });
+}
+document.addEventListener('keydown', (ev) => {
+  if (!ev.altKey || ev.ctrlKey || ev.shiftKey) return;
+  if (ev.key === 'ArrowLeft') { ev.preventDefault(); goBack(); }
+  if (ev.key === 'ArrowRight') { ev.preventDefault(); goForward(); }
+});
+
+function select(id, fromHistory = false) {
+  if (!fromHistory && state.selected && state.selected !== id) {
+    nav.back.push(state.selected);
+    if (nav.back.length > 50) nav.back.shift();
+    nav.forward.length = 0;
+  }
   state.selected = id;
   try { localStorage.setItem('lumora.selected', id); } catch { /* not remembered */ }
   document.body.classList.toggle('cooler-view', !!cooling.coolerId(id) || system.isSystem(id));
